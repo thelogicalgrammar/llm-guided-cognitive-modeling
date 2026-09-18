@@ -8,6 +8,19 @@ import warnings
 import traceback
 import sys
 import ast
+import os
+
+# ------ JAX Setup ------
+# one CPU thread per evaluation process, as OpenEvolve already runs many evaluations in parallel (must be set before importing jax)
+os.environ.setdefault("XLA_FLAGS", "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1")
+try:
+    import jax
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+    from jax.scipy.special import logsumexp as jax_logsumexp
+    JAX_AVAILABLE = True
+except ImportError:
+    JAX_AVAILABLE = False
 
 # ------ Load Data Globally ------
 experiments = [
@@ -18,10 +31,78 @@ experiments = [
     {'name': 'HW', 'experiment': 'exp0', 'num_options': 2}
 ] # different names are used here to ensure the LLM cannot get the names of the experiments
 
-data_path = "Path/to/your/data/"  # Update this path to your actual data directory
-prog_path = "Path/to/your/programs/"  # Update this path to your actual programs directory
+data_path = os.environ.get("COGMOD_DATA_PATH", "Path/to/your/data/")  # Update this path (or set COGMOD_DATA_PATH) to your actual data directory
+prog_path = os.environ.get("COGMOD_PROG_PATH", "Path/to/your/programs/")  # Update this path (or set COGMOD_PROG_PATH) to your actual programs directory
 
-TRAIN_DATA = [np.load(f"{data_path}{exp['name']}/struc_Train_{exp['experiment']}.npy") for exp in experiments]
+def load_blocks(data):
+    """
+    Reshape trial rows into arrays of shape (n_blocks, n_trials), with one block per participant and game.
+
+    All experiments contain the data columns:
+    participant:    int32   - The participant ID
+    game:           int32   - The number of the game, starts at 1
+    horizon:        int32   - The number of trials per game, -1 if not known by the participant
+    trial:          int32   - The trial number, resets every game and starts at 1
+    forced:         int32   - Either 0 or 1, with 1 representing a non-trial, which won't be taken into account during computation of nll
+    human_choice:   int32   - The human choice that has to be modelled
+    reward:         int32   - The reward as a consequence of the human_choice
+    hazard_rate:    int32   - Indicates the degree of abrupt expected point change, it ranges from 0-10, with 1 representing a 10% change
+
+    Blocks shorter than the longest block are padded at the end with forced trials (choice 0, reward 0).
+    """
+    data = np.asarray(data)
+
+    # identify blocks and the position of each row within its block (rows keep their order within a block)
+    _, block = np.unique(data[:, :2].astype(np.int64), axis=0, return_inverse=True)
+    block = block.ravel()
+    counts = np.bincount(block)
+    order = np.argsort(block, kind='stable')
+    position = np.empty(len(data), dtype=np.int64)
+    position[order] = np.arange(len(data)) - np.repeat(np.cumsum(counts) - counts, counts)
+    n_blocks, n_trials = len(counts), int(counts.max())
+
+    def grid(column, fill, dtype):
+        values = np.full((n_blocks, n_trials), fill, dtype=dtype)
+        values[block, position] = data[:, column]
+        return values
+
+    # horizon and hazard rate are constant within a block, padding repeats the block's first value
+    first_row = order[np.cumsum(counts) - counts]
+    horizon = np.repeat(data[first_row, 2].astype(np.int64)[:, None], n_trials, axis=1)
+    hazard_rate = np.repeat(data[first_row, 7].astype(np.float64)[:, None], n_trials, axis=1)
+    trial = np.repeat(np.arange(1, n_trials + 1, dtype=np.int64)[None, :], n_blocks, axis=0)
+    trial[block, position] = data[:, 3]
+
+    blocks = {
+        'horizon': horizon,
+        'hazard_rate': hazard_rate,
+        'trial': trial,
+        'forced': grid(4, 1, np.int64),
+        'choice': grid(5, 0, np.int64),
+        'reward': grid(6, 0, np.float64),
+    }
+
+    # make inputs read-only, so programs cannot modify the data in place
+    for values in blocks.values():
+        values.flags.writeable = False
+
+    blocks['free'] = blocks['forced'] == 0
+    blocks['n_free'] = int(blocks['free'].sum())
+    blocks['n_blocks'], blocks['n_trials'] = n_blocks, n_trials
+    return blocks
+
+TRAIN_BLOCKS = [load_blocks(np.load(os.path.join(data_path, exp['name'], f"struc_Train_{exp['experiment']}.npy"))) for exp in experiments]
+
+# ------ Fitting Budget ------
+# Powell evaluations per start and number of starts per experiment for the full (stage 2) evaluation.
+# The first start uses the program's own initial values, the others are random points within the bounds.
+FIT_MAXFEV = int(os.environ.get("COGMOD_FIT_MAXFEV", 1000))
+FIT_STARTS = int(os.environ.get("COGMOD_FIT_STARTS", 5))
+
+# Fitting method for the full evaluation: "jax" fits with gradients (L-BFGS-B, gradients from JAX) and falls back to Powell
+# for programs that JAX cannot trace; "powell" always uses Powell.
+FIT_METHOD = os.environ.get("COGMOD_FIT_METHOD", "jax")
+JAX_MAXITER = int(os.environ.get("COGMOD_JAX_MAXITER", 500))
 
 
 def compute_source_complexity(program_path):
@@ -33,19 +114,17 @@ def compute_source_complexity(program_path):
     complexity = sum(1 for _ in ast.walk(tree))
     return complexity
 
-def evalModel(x, data, num_op, param_keys, model):
+def safe_model_complexity(program_path):
+    """Model complexity for failed programs, so OpenEvolve can still place them in the feature grid."""
+    try:
+        return float(compute_source_complexity(program_path))
+    except Exception:
+        return 0.0
+
+def evalModel(x, blocks, num_op, param_keys, model):
     """
-    Evaluate the model. First, load in the data. Second, create the model. Third, loop over each trial, and apply initilize, when a new participant appears.
-    
-    All experiments contain the data columns:
-    participant:    int32   - The participant ID
-    game:           int32   - The number of the game, starts at 1
-    horizon:        int32   - The number of trials per game, -1 if not known by the participant
-    trial:          int32   - The trial number, resets every game and starts at 1
-    forced:         int32   - Either 0 or 1, with 1 representing a non-trial, which won't be taken into account during computation of nll
-    human_choice:   int32   - The human choice that has to be modelled
-    reward:         int32   - The reward as a consequence of the human_choice
-    hazard_rate:    int32   - Indicates the degree of abrupt expected point change, it ranges from 0-10, with 1 representing a 10% change
+    Evaluate the model on all blocks of an experiment at once. First, set the parameters. Second, reset the latent state of all blocks.
+    Third, step through the trial positions, predicting logits and updating the model for all blocks simultaneously.
     """
     # create the parameter dictionary from the static keys and dynamic values
     params_dict = dict(zip(param_keys, x))
@@ -53,65 +132,32 @@ def evalModel(x, data, num_op, param_keys, model):
     # create bare-bones model object
     model.set_params(num_op, params_dict)
 
-    nll = 0.0
-    prev_participant = None
-    prev_game = None
+    # initialize the latent state of all blocks
+    model.reset(blocks['horizon'][:, 0], blocks['hazard_rate'][:, 0])
 
-    # store logits
-    all_logits = []
+    nll_sum = 0.0
+    for t in range(blocks['n_trials']):
+        trial = blocks['trial'][:, t]
+        horizon = blocks['horizon'][:, t]
+        hazard_rate = blocks['hazard_rate'][:, t]
+        forced = blocks['forced'][:, t]
 
-    all_participant = data[:, 0]
-    all_game = data[:, 1]
-    all_horizon = data[:, 2]
-    all_trial = data[:, 3]
-    all_forced = data[:, 4]
-    all_human_choice = data[:, 5]
-    all_reward = data[:, 6]
-    all_hazard_rate = data[:, 7]
+        # Predict action logits for all blocks
+        logits = np.asarray(model.predict(trial, horizon, hazard_rate, forced), dtype=np.float64)
+        if logits.shape != (blocks['n_blocks'], num_op):
+            raise ValueError(f"predict returned logits of shape {logits.shape}, expected (n_blocks, num_options) = {(blocks['n_blocks'], num_op)}")
 
-    # loop over each row (i.e., trial) in the data
-    for i in range(len(data)):
-
-        # extract the data from the row
-        participant = all_participant[i]
-        game = all_game[i]
-        horizon = all_horizon[i]
-        trial = all_trial[i]
-        forced = all_forced[i]
-        human_choice = all_human_choice[i]
-        reward = all_reward[i]
-        hazard_rate = all_hazard_rate[i]
-
-        # Initialize model state per participant
-        if participant != prev_participant:
-            model.participant_reset()
-            prev_participant = participant
-            prev_game = None
-
-        # Reset game-specific variables
-        if game != prev_game:
-            model.game_reset(game, horizon, hazard_rate)
-            prev_game = game
-
-        # Predict action probabilities
-        logits = model.predict(game, trial, horizon, hazard_rate, forced)
-
-        if forced == 0:
-            # store logits for vectorized computations later
-            all_logits.append(logits)
+        # accumulate nll over free-choice trials
+        free = blocks['free'][:, t]
+        if free.any():
+            free_logits = logits[free]
+            nll_sum += np.sum(scipy.special.logsumexp(free_logits, axis=1) - free_logits[np.arange(len(free_logits)), blocks['choice'][free, t]])
 
         # Update model based on human choice and reward
-        model.update(game, trial, horizon, hazard_rate, forced, human_choice, reward)
-
-    # transform list of logits to numpy array
-    npall_logits = np.array(all_logits)
-
-    # prepare for slicing the logits
-    choices = data[data[:, 4] == 0, 5].astype(int)
-    row_indices = np.arange(len(choices))
+        model.update(trial, horizon, hazard_rate, forced, blocks['choice'][:, t], blocks['reward'][:, t])
 
     # compute nll
-    nll = np.mean(scipy.special.logsumexp(npall_logits, axis = 1) - npall_logits[row_indices, choices])
+    nll = nll_sum / blocks['n_free']
 
     # set best_nll and best_params as global so they are consistent across functions
     global best_nll, best_params
@@ -123,7 +169,91 @@ def evalModel(x, data, num_op, param_keys, model):
 
     return nll
 
-def run_model(program_path, max_eval):
+BLOCK_FIELDS = ['trial', 'horizon', 'hazard_rate', 'forced', 'choice', 'reward']
+JAX_BLOCKS = {}
+
+def jax_blocks(i):
+    """Training blocks of experiment i as JAX arrays with time first, shape (n_trials, n_blocks), for jax.lax.scan"""
+    if i not in JAX_BLOCKS:
+        blocks = TRAIN_BLOCKS[i]
+        xs = {k: jnp.asarray(np.ascontiguousarray(blocks[k].T)) for k in BLOCK_FIELDS}
+        xs['free'] = jnp.asarray(blocks['free'].T.astype(np.float64))
+        JAX_BLOCKS[i] = xs
+    return JAX_BLOCKS[i]
+
+class numpy_as_jax:
+    """Temporarily point the program's `np` to jax.numpy, so the same program code can be traced and differentiated"""
+    def __init__(self, program):
+        self.program = program
+    def __enter__(self):
+        self.saved = self.program.__dict__.get('np')
+        self.program.np = jnp
+    def __exit__(self, *exc):
+        self.program.np = self.saved
+
+def make_jax_value_and_grad(program, i, num_op, param_keys):
+    """
+    Build a compiled function returning the mean nll over free-choice trials and its gradient with respect to the parameters.
+    The trial loop runs in jax.lax.scan, with every JAX array attribute of the model after reset() as the scan state.
+    """
+    blocks = TRAIN_BLOCKS[i]
+    horizon, hazard_rate, n_blocks, n_free = jnp.asarray(blocks['horizon'][:, 0]), jnp.asarray(blocks['hazard_rate'][:, 0]), blocks['n_blocks'], blocks['n_free']
+
+    def loss(x, xs):
+        model = program.Model()
+        model.set_params(num_op, {k: x[j] for j, k in enumerate(param_keys)})
+        model.reset(horizon, hazard_rate)
+        state = {k: v for k, v in vars(model).items() if isinstance(v, jax.Array)}
+        static = {k: v for k, v in vars(model).items() if k not in state}
+
+        def step(state, s):
+            step_model = program.Model.__new__(program.Model)
+            step_model.__dict__.update(static)
+            step_model.__dict__.update(state)
+            logits = jnp.asarray(step_model.predict(s['trial'], s['horizon'], s['hazard_rate'], s['forced']))
+            if logits.shape != (n_blocks, num_op):
+                raise ValueError(f"predict returned logits of shape {logits.shape}, expected (n_blocks, num_options) = {(n_blocks, num_op)}")
+            chosen = jnp.take_along_axis(logits, s['choice'][:, None], axis=1)[:, 0]
+            nll = jnp.sum((jax_logsumexp(logits, axis=1) - chosen) * s['free'])
+            step_model.update(s['trial'], s['horizon'], s['hazard_rate'], s['forced'], s['choice'], s['reward'])
+            return {k: jnp.asarray(getattr(step_model, k)) for k in state}, nll
+
+        _, nlls = jax.lax.scan(step, state, xs)
+        return jnp.sum(nlls) / n_free
+
+    return jax.jit(jax.value_and_grad(loss))
+
+def fit_with_jax(program, i, num_op, param_keys, param_bounds, starts):
+    """
+    Fit the parameters with L-BFGS-B from every start, using gradients from JAX. Returns the optimum of every start that converged to a finite nll.
+    Raises an exception if the program cannot be traced by JAX, so the caller can fall back to Powell.
+    """
+    xs = jax_blocks(i)
+    with numpy_as_jax(program):
+        value_and_grad = make_jax_value_and_grad(program, i, num_op, param_keys)
+
+        def fun(x):
+            value, grad = value_and_grad(jnp.asarray(x, dtype=jnp.float64), xs)
+            return float(value), np.asarray(grad, dtype=np.float64)
+
+        # compile and check the first start; tracing errors propagate to the caller
+        value, grad = fun(starts[0])
+
+        optima = []
+        for x0 in starts:
+            try:
+                result = minimize(fun, x0, jac=True, method='L-BFGS-B', bounds=list(param_bounds.values()), options={'maxiter': JAX_MAXITER})
+            # a numerical failure from one start only discards that start
+            except (FloatingPointError, ValueError, OverflowError, ZeroDivisionError):
+                continue
+            if np.isfinite(result.fun) and np.all(np.isfinite(result.x)):
+                optima.append(result.x)
+
+    if not optima:
+        raise RuntimeError("JAX fitting found no finite optimum")
+    return optima
+
+def run_model(program_path, max_eval, n_starts=1, method="powell"):
     """
     This function is called once for each iteration by OpenEvolve, which includes:
     1. training the model by optimizing the adjustable parameters.
@@ -137,9 +267,10 @@ def run_model(program_path, max_eval):
 
     # get source_complexity based on model AST for combined_score penalization
     source_complexity = compute_source_complexity(program_path)
-    
-    # initialize numpy to consider all warnings as errors.
-    np.seterr(all='raise')
+
+    # initialize numpy to consider all warnings as errors, except underflow, which is harmless
+    # (e.g. inside logsumexp for confident predictions) and would otherwise reject well-fitted models
+    np.seterr(all='raise', under='ignore')
     warnings.simplefilter("error", OptimizeWarning)
 
     # get parameter bounds, the keys, and number of parameters
@@ -153,6 +284,11 @@ def run_model(program_path, max_eval):
     # construct the model
     model = program.Model()
 
+    # use JAX for this program until tracing fails once
+    use_jax = method == "jax" and JAX_AVAILABLE
+    jax_failure = None if JAX_AVAILABLE or method != "jax" else "jax is not installed"
+    n_jax_fits = 0
+
     # loop over experiments and store results
     results = []
     for i, exp in enumerate(experiments):
@@ -163,7 +299,7 @@ def run_model(program_path, max_eval):
         best_params = {}
 
         # get data for this experiment
-        train_data = TRAIN_DATA[i]
+        train_data = TRAIN_BLOCKS[i]
 
         # get number of options
         num_options = exp['num_options']
@@ -182,15 +318,43 @@ def run_model(program_path, max_eval):
             # get initial parameter values in the correct order for optimization
             param_init = np.array([init_param_dict[k] for k in param_keys], dtype=np.float64)
 
-            # run optimization of trainable parameters
-            minimize(
-                evalModel,
-                x0=param_init,
-                args=(train_data, num_options, param_keys, model),
-                options={'maxfev': max_eval},
-                method='Powell',
-                bounds=list(param_bounds.values())
-            )
+            # starting points: the program's own initial values, followed by random points within the bounds (deterministic per experiment)
+            rng = np.random.default_rng(i)
+            starts = [param_init] + [np.array([rng.uniform(lo, hi) if lo is not None and hi is not None and np.isfinite([lo, hi]).all() else init
+                                               for (lo, hi), init in zip(param_bounds.values(), param_init)], dtype=np.float64)
+                                     for _ in range(n_starts - 1)]
+
+            # fit with gradients from JAX, falling back to Powell for the rest of this program if JAX cannot trace it
+            jax_optima = None
+            if use_jax:
+                try:
+                    jax_optima = fit_with_jax(program, i, num_options, param_keys, param_bounds, starts)
+                except Exception as e:
+                    use_jax = False
+                    jax_failure = f"{type(e).__name__}: {str(e)[:500]}"
+
+            if jax_optima is not None:
+                # score the JAX optima with the NumPy evaluation, so nll values and errors match the Powell path
+                n_jax_fits += 1
+                numerical_errors = []
+                for x in jax_optima:
+                    try:
+                        evalModel(x, train_data, num_options, param_keys, model)
+                    # an optimum that is numerically unstable in NumPy is discarded, unless all optima are
+                    except (FloatingPointError, OverflowError, ZeroDivisionError) as e:
+                        numerical_errors.append(e)
+                if len(numerical_errors) == len(jax_optima):
+                    raise numerical_errors[0]
+            else:
+                # run optimization of trainable parameters from the program's own initial values
+                minimize(
+                    evalModel,
+                    x0=param_init,
+                    args=(train_data, num_options, param_keys, model),
+                    options={'maxfev': max_eval},
+                    method='Powell',
+                    bounds=list(param_bounds.values())
+                )
 
         # catch all errors (and warnings raised as errors)
         except (FloatingPointError, OptimizeWarning, Exception) as e:
@@ -199,26 +363,51 @@ def run_model(program_path, max_eval):
 
             # get the last call, for exact location of the error
             last_call = traceback.extract_tb(tb)[-1]
-            
+
             # create format of the error, and return as tuple
             error_type = type(e).__name__
             error_message = e
             error_location =  f"line {last_call.lineno}, in {last_call.name}: {last_call.line}"
             return {'Experiment': i+1, 'error_type': error_type, 'error_message': str(error_message), 'error_location':error_location}
 
+        # additional random starts for Powell, best result over all starts is kept
+        for x0 in (starts[1:] if jax_optima is None else []):
+            try:
+                minimize(
+                    evalModel,
+                    x0=x0,
+                    args=(train_data, num_options, param_keys, model),
+                    options={'maxfev': max_eval},
+                    method='Powell',
+                    bounds=list(param_bounds.values())
+                )
+            # a numerical failure from a random start only discards that start
+            except (FloatingPointError, OptimizeWarning, ValueError, OverflowError, ZeroDivisionError):
+                continue
+
         # store all the data in a list of dictionaries
         results.append({"Experiment": i+1, "combined_score": np.exp(-best_nll), "nll": best_nll, "model_complexity": model_complexity, "parameters": best_params})
             
-    # return the results as a dataframe
-    return pd.DataFrame(results)
+    # clear compiled JAX functions, as every program compiles new ones
+    if JAX_AVAILABLE:
+        jax.clear_caches()
+
+    # return the results as a dataframe, with the fitting method as metadata
+    results = pd.DataFrame(results)
+    results.attrs['jax_fit'] = n_jax_fits / len(experiments)
+    results.attrs['jax_failure'] = jax_failure
+    return results
 
 # Stage-based evaluation for cascade evaluation
-def evaluate(program_path, max_eval=20, stage=2):
-    """First stage evaluation with fewer trials"""
+def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
+    """Evaluate a program by fitting its parameters on each experiment from `n_starts` starting points, with JAX gradients or Powell (`max_eval` evaluations per start)"""
+
+    # model complexity is also reported for failed programs, as it is a feature dimension of the program database
+    failed_complexity = safe_model_complexity(program_path)
 
     try:
         # Run a single trial with timeout
-        result = run_model(program_path, max_eval)
+        result = run_model(program_path, max_eval, n_starts, method)
 
         # catch caused by wrong implementations
         if isinstance(result, dict):
@@ -228,7 +417,8 @@ def evaluate(program_path, max_eval=20, stage=2):
 
             error_artifacts = {
                 'errors:': error_summary,
-                "suggestion": ("Ensure all required methods of the class Model are exist, namely: __init__, set_params, participant_reset, game_reset, predict, update."
+                "suggestion": ("Ensure all required methods of the class Model exist, namely: __init__, set_params, reset, predict, update."
+                               "All inputs are NumPy arrays with one entry per block, state should be arrays with one row per block, and predict must return an array of shape (n_blocks, num_options)."
                                "Ensure define_parameters_and_bounds and get_init_param exists, and that all these functions return the correct format."
                                "Also ensure math is handled correctly, and that bounds and initial guesses are properly set for the trainable parameters."
                                )
@@ -238,6 +428,7 @@ def evaluate(program_path, max_eval=20, stage=2):
                 metrics={
                     "runs_successfully": 0.0, 
                     "combined_score": 0.0,
+                    "model_complexity": failed_complexity,
                     "error": result['error_message']
                 },
                 artifacts=error_artifacts
@@ -251,13 +442,14 @@ def evaluate(program_path, max_eval=20, stage=2):
                 error_artifacts = {
                     "error_type": "InvalidReturnFormat",
                     "error_message": f"Stage {stage}: Invalid result format, expected got n-results: {result.shape[1]}",
-                    "suggestion": "Ensure predict returns the same amount of logits as num_options."
+                    "suggestion": "Ensure predict returns an array of shape (n_blocks, num_options)."
                 }
                 
                 return EvaluationResult(
                     metrics={
                         "runs_successfully": 0.0, 
                         "combined_score": 0.0,
+                        "model_complexity": failed_complexity,
                         "error": "Invalid result format"
                     },
                     artifacts=error_artifacts
@@ -275,6 +467,7 @@ def evaluate(program_path, max_eval=20, stage=2):
                 metrics={
                     "runs_successfully": 0.0, 
                     "combined_score": 0.0,
+                    "model_complexity": failed_complexity,
                     "error": "Invalid result format"
                 },
                 artifacts=error_artifacts
@@ -300,6 +493,7 @@ def evaluate(program_path, max_eval=20, stage=2):
                 metrics={
                     "runs_successfully": 0.1, 
                     "combined_score": 0.0,
+                    "model_complexity": failed_complexity,
                     "error": "Invalid result values"
                 },
                 artifacts=error_artifacts
@@ -307,19 +501,25 @@ def evaluate(program_path, max_eval=20, stage=2):
         
         # compute mean combined score
         best_stats = result[['combined_score', 'nll', 'model_complexity']].mean().to_dict()
+        jax_fit, jax_failure = result.attrs.get('jax_fit', 0.0), result.attrs.get('jax_failure')
         result.drop(columns=['model_complexity'], inplace=True)
         
         # Add artifacts for successful stage 1
         evaluation_artifacts = {
             "Experiment History\n": result.to_dict(orient='records')
         }
+        if method == "jax" and jax_failure:
+            evaluation_artifacts["fitting"] = (f"Parameters were fitted with the slower Powell method, because JAX could not trace the program ({jax_failure}). "
+                                               "Write array code that also works with jax.numpy: no in-place array assignment, no Python if on array values, "
+                                               "no float() or int() on parameters, and create all state arrays in reset().")
 
         return EvaluationResult(
             metrics={
                 "runs_successfully": 1.0,
                 "combined_score": best_stats['combined_score'],
                 "nll": best_stats['nll'],
-                "model_complexity": best_stats['model_complexity']
+                "model_complexity": best_stats['model_complexity'],
+                "jax_fit": jax_fit
             },
             artifacts=evaluation_artifacts
         )
@@ -328,7 +528,7 @@ def evaluate(program_path, max_eval=20, stage=2):
         
         error_artifacts = {
             "error_type": "TimeoutError",
-            "error_message": "Stage {stage}: Function execution exceeded 1000 second timeout",
+            "error_message": f"Stage {stage}: Function execution exceeded the evaluator timeout",
             "suggestion": "Function is likely stuck in infinite loop or doing too much computation. Try reducing iterations or adding early termination conditions"
         }
         
@@ -336,6 +536,7 @@ def evaluate(program_path, max_eval=20, stage=2):
             metrics={
                 "runs_successfully": 0.0, 
                 "combined_score": 0.0,
+                "model_complexity": failed_complexity,
                 "error": "Timeout"
             },
             artifacts=error_artifacts
@@ -355,6 +556,7 @@ def evaluate(program_path, max_eval=20, stage=2):
             metrics={
                 "runs_successfully": 0.0, 
                 "combined_score": 0.0,
+                "model_complexity": failed_complexity,
                 "error": f"IndexError: {str(e)}"
             },
             artifacts=error_artifacts
@@ -374,6 +576,7 @@ def evaluate(program_path, max_eval=20, stage=2):
             metrics={
                 "runs_successfully": 0.0, 
                 "combined_score": 0.0,
+                "model_complexity": failed_complexity,
                 "error": str(e)
             },
             artifacts=error_artifacts
@@ -384,7 +587,7 @@ def evaluate_stage1(program_path):
     return evaluate(program_path, 3, 1)
 
 def evaluate_stage2(program_path):
-    return evaluate(program_path, 20, 2)
+    return evaluate(program_path, FIT_MAXFEV, 2, FIT_STARTS, FIT_METHOD)
 
 if __name__ == "__main__":
     print(evaluate_stage2(f"{prog_path}initial_program.py")) # just for testing, the other print statements are also purely for testing purposes

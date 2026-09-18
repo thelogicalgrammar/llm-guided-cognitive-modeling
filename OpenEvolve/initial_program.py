@@ -7,13 +7,18 @@ class Model:
     # Prefer deterministic mechanisms unless stochasticity is essential.
     # Expensive random sampling significantly slows optimization.
 
+    # All blocks (games) of an experiment are processed at once: every input is a NumPy array with one entry per block,
+    # and latent state is stored as arrays with one row per block. Do not loop over blocks in Python.
+    # The same code is also run with jax.numpy to fit parameters with gradients: create new arrays instead of assigning in place,
+    # use np.where instead of Python if on arrays, and create all state arrays in reset().
+
     def __init__(self):
         """
-        This initialization function is called once when the model is created. 
+        This initialization function is called once when the model is created.
         It is only meant to avoid initialize the model object multiple times.
         """
         pass
-    
+
     def set_params(self, num_options, params_dict):
         """
         This function is called during parameter optimization per experiment, and should update the model's parameters based on the input dictionary.
@@ -23,21 +28,18 @@ class Model:
         # extract parameters
         self.alpha = params_dict["alpha"]      # learning rate
 
-    def participant_reset(self):
-        # Reset all participant-level latent state variables here, this is called whenever a new participant begins.
-        pass
+    def reset(self, horizon, hazard_rate):
+        # Initialize the latent state of all blocks here, e.g. values of shape (n_blocks, num_options).
+        # horizon and hazard_rate are arrays of shape (n_blocks,). This is called before the first trial of every evaluation.
+        self.n_blocks = len(horizon)
 
-    def game_reset(self, game, horizon, hazard_rate):
-        # Reset or update game-specific latent variables here, this is called whenever a new game begins.
-        pass
-
-    def predict(self, game, trial, horizon, hazard_rate, forced):
-        # Returns raw action logits of shape (num_options,), do NOT apply softmax or convert to probabilities.
-        logits = [self.alpha] * self.num_options
+    def predict(self, trial, horizon, hazard_rate, forced):
+        # Returns raw action logits of shape (n_blocks, num_options), do NOT apply softmax or convert to probabilities.
+        logits = np.full((self.n_blocks, self.num_options), self.alpha)
         return logits
 
-    def update(self, game, trial, horizon, hazard_rate, forced, h_choice, r_points):
-        # update state based on trial feedback
+    def update(self, trial, horizon, hazard_rate, forced, choice, reward):
+        # update state based on trial feedback, all inputs are arrays of shape (n_blocks,)
         pass
 
 
@@ -62,7 +64,7 @@ def get_init_param(experiment):
     An error will be raised if any additional parameters are added or some are unused for a particular experiment.
     """
     default_params = {'alpha': 1}
-    
+
     # set initial parameters values depending on the experiment
     match experiment:
         case 1:

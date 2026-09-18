@@ -1,6 +1,8 @@
 # Configuration for function minimization example
 max_iterations: 10000
 checkpoint_interval: 30
+max_tasks_per_child: 100   # restart evaluation workers every 100 programs; setting this also makes OpenEvolve start workers with spawn instead of fork,
+                           # which is required because the evaluator imports JAX (multithreaded) before the worker processes are created
 
 # LLM configuration
 llm:
@@ -9,12 +11,13 @@ llm:
       api_base: "http://localhost:11434/v1"   # vLLM server port
     
   temperature: 0.85
-  max_tokens: 30000
+  max_tokens: 8000        # diff responses are short; the cap stops rambling responses from blocking a worker
   timeout: 1000
 
 # Prompt configuration
 prompt:
   use_template_stochasticity: True  # Instructs OpenEvolve to parse placeholders
+  template_dir: "templates"        # user prompt templates containing {improvement_suggestion}; OpenEvolve only fills placeholders in user templates, not in the system message
   template_variations:
     improvement_suggestion:
         - "Simplify the model by removing weak mechanisms, redundant parameters, and unnecessary state while preserving performance."
@@ -28,25 +31,40 @@ prompt:
     Goal: Imitate human decisions and model the logit distribution of human choices accurately. The primary objective is to predict the participant's choice, not to maximize reward.
     Task: Modify the Model class methods to model human decision-making and adjust the parameter definition functions to create trainable parameters.
     Model Usage: This model structure will remain constant across different experiments, but parameter values will be optimized independently for each experiment.
-    Data Information: All data contains the same columns across experiments, and the actual data will be presented per-trial to the model class methods.
-    
-    Inputs:
-    participant:  int32 - The participant ID
-    game:         int32 - The number of the game, starts at 1
-    horizon:      int32 - The number of trials per game, -1 if not known by the participant
-    trial:        int32 - The trial number, resets every game and starts at 1
-    forced:       int32 - Either 0 or 1, with 1 indicates an instructed/forced trial and 0 indicates a free-choice trial. Forced trials are not included in nll computation
-    human_choice: int32 - The human choice that has to be modelled
-    reward:       int32 - The reward as a consequence of the human_choice
-    hazard_rate:  int32 - Indicates the degree of abrupt expected point change, it ranges from 0-10, with 1 representing a 10% change
-    experiment:   int32 - The experiment number, 1 to 5
-    
+    Data Information: All data contains the same columns across experiments. Each game (block of trials with the same slot machines) is independent,
+    and all games of an experiment are processed simultaneously: the Model methods receive NumPy arrays with one entry per game, trial by trial.
+
+    Vectorization:
+    - reset(horizon, hazard_rate) is called once before the first trial and must initialize all latent state as arrays with one row per game, e.g. values of shape (n_games, num_options).
+    - predict and update are called once per trial position for all games at once. Do not loop over games in Python; use array operations.
+    - Games have different lengths. Trial positions after a game has ended are padding, marked forced == 1 (choice 0, reward 0); they are ignored in the nll.
+    - Input arrays are read-only.
+
+    Gradient fitting (JAX):
+    Parameters are fitted with gradients by running the same code with `np` replaced by jax.numpy. Write code that works with both:
+    - No in-place array assignment (x[i] = ..., x[i] += ...). Create new arrays instead, e.g. onehot = np.eye(num_options)[choice] and values = values + (rate * error)[:, None] * onehot.
+    - Read the chosen option with np.sum(values * onehot, axis=1) or values[np.arange(n_games), choice].
+    - No Python if/while on array values; use np.where or arithmetic masks such as (forced == 0).
+    - Create all state arrays in reset() and keep their shapes and dtypes fixed; do not call float() or int() on parameters or arrays.
+    - Only use functions from `np`; do not import other numerical libraries.
+    Programs that break these rules still run, but are fitted with a much slower method.
+
+    Inputs (arrays of shape (n_games,)):
+    horizon:      int64   - The number of trials per game, -1 if not known by the participant
+    trial:        int64   - The trial number within the game, starts at 1 (forced trials included)
+    forced:       int64   - Either 0 or 1, with 1 indicates an instructed/forced trial (or padding) and 0 indicates a free-choice trial. Forced trials are not included in nll computation
+    choice:       int64   - The human choice that has to be modelled
+    reward:       float64 - The reward as a consequence of the choice
+    hazard_rate:  float64 - Indicates the degree of abrupt expected point change, it ranges from 0-10, with 1 representing a 10% change
+    num_options:  int     - The number of options, passed to set_params
+
     Outputs:
-    predict() - Returns a list of raw logits with shape (num_options,), do not apply softmax or convert to probabilities.
-    - Returning logits is only neccesary when forced == 0.
+    predict() - Returns an array of raw logits with shape (n_games, num_options), do not apply softmax or convert to probabilities.
+    - Logits are only used where forced == 0.
     define_parameters_and_bounds() - Returns a dictionary with parameter names as keys and their bounds (lower and upper) as values.
     get_init_param(experiment) - Returns a dictionary with parameter names as keys and initial parameter values, these can differ per experiment.
     - Note: The keys in both dictionaries must match the keys in define_parameters_and_bounds exactly.
+    - Note: get_init_param is the only place where the experiment number (1 to 5) is available. The Model methods never receive it.
 
     Priority order:
     1. Improve combined_score.
@@ -58,7 +76,9 @@ prompt:
     Notes:
     - Keep code as dynamic as possible. Avoid hard-coded experiment-specific behavior whenever possible.
     - Avoid numerical instability such as extremely large or small logits.
-    - Parameters are only optimized briefly; provide reasonable initial values and bounds.
+    - Parameters are fitted per experiment from several starting points (your initial values and random points within the bounds); keep bounds finite and sensible.
+    - Make quantities that should be tuned trainable parameters instead of hardcoded constants.
+    - Use forced, horizon, trial, hazard_rate and num_options to adapt to the structure of each task.
 
     Participant instructions contained the follow characteristics:    
     Experiment 1:
@@ -82,14 +102,12 @@ prompt:
     - new pair of slot machines each game
     - each option gives some points, that tend around an average
     - participants are instructed to maximize points
-    - first 4 trials each game are instructed (forced) where participants didn't have freedom to choose
+    - first 4 trials each game are instructed (forced == 1) where participants didn't have freedom to choose
     - after the instructed trials, participants did have freedom to choose for either 1 or 6 trials
 
     General suggestion:
     Novel cognitive mechanisms, latent states, memory systems, or belief representations are allowed if they improve prediction and remain cognitively plausible.
 
-    # MAIN IMPROVEMENT SUGGESTION #
-    {improvement_suggestion}
     
   include_artifacts: True
   
@@ -105,10 +123,11 @@ database:
 
 # Evaluator configuration
 evaluator:
-  timeout: 1000
+  timeout: 1800            # stage 2 fits 5 starts x 1000 Powell evaluations per experiment; measured 2-5 min per program locally, slower for larger programs
   cascade_evaluation: True
   cascade_thresholds: [0.05]
-  parallel_evaluations: 30
+  parallel_evaluations: 60   # concurrent iterations (LLM request + evaluation); workers mostly wait for the LLM, so this can exceed the number of cores.
+                             # Raise until vLLM's /metrics show waiting requests or a full KV cache.
   enable_artifacts: True
 
 # Evolution settings
