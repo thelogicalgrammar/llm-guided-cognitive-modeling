@@ -1,4 +1,3 @@
-from sklearn.model_selection import GroupShuffleSplit
 import pandas as pd
 import numpy as np
 from datasets import load_dataset
@@ -33,16 +32,17 @@ MaggiesFarm_path = "https://github.com/marcelbinz/Llama-3.1-Centaur-70B/raw/main
 MaggiesFarm = pd.read_json(MaggiesFarm_path, lines=True)
 
 # Include 101Name mapping in the master registry to simplify text retrieval
+# 'dir' is the data directory of each experiment, as read by OpenEvolve/evaluator.py, LLMFineTuning and LLMInference
 experiments = pd.DataFrame([
-    {'name': 'TwoBandit',      'experiment': 'exp1', 'split': 'Train', '101Name': 'gershman2018deconstructing/exp1.csv', 'struc_data': TwoBanditExp1},
-    {'name': 'TwoBandit',      'experiment': 'exp2', 'split': 'Train', '101Name': 'gershman2018deconstructing/exp2.csv', 'struc_data': TwoBanditExp2},
-    {'name': 'HorizonSomer',   'experiment': 'exp0', 'split': 'Train', '101Name': 'somerville2017charting/exp1.csv',      'struc_data': HorizonSomer},
-    {'name': 'HorizonWaltz',   'experiment': 'exp0', 'split': 'Train', '101Name': 'waltz2020differential/exp1.csv',       'struc_data': HorizonWaltz},
-    {'name': 'DriftingBandit', 'experiment': 'exp0', 'split': 'Train', '101Name': 'bahrami2020four/exp.csv',              'struc_data': FourDrifting},
-    {'name': 'ChangingBandit', 'experiment': 'exp0', 'split': 'OOD',   '101Name': 'xiong2023neural/exp1.csv',             'struc_data': TwoChanging},
-    {'name': 'HorizonSade',    'experiment': 'exp0', 'split': 'OOD',   '101Name': 'sadeghiyeh2020temporal/exp1.csv',      'struc_data': HorizonSade},
-    {'name': 'HorizonFeng',    'experiment': 'exp0', 'split': 'OOD',   '101Name': 'feng2021dynamics/exp1.csv',            'struc_data': HorizonFeng},
-    {'name': 'MaggiesFarm',    'experiment': 'exp0', 'split': 'OOD',   '101Name': None,                                   'struc_data': MaggiesFarm_struc},
+    {'name': 'TwoBandit',      'dir': 'TB',  'experiment': 'exp1', 'split': 'Train', '101Name': 'gershman2018deconstructing/exp1.csv', 'struc_data': TwoBanditExp1},
+    {'name': 'TwoBandit',      'dir': 'TB',  'experiment': 'exp2', 'split': 'Train', '101Name': 'gershman2018deconstructing/exp2.csv', 'struc_data': TwoBanditExp2},
+    {'name': 'HorizonSomer',   'dir': 'HSo', 'experiment': 'exp0', 'split': 'Train', '101Name': 'somerville2017charting/exp1.csv',      'struc_data': HorizonSomer},
+    {'name': 'HorizonWaltz',   'dir': 'HW',  'experiment': 'exp0', 'split': 'Train', '101Name': 'waltz2020differential/exp1.csv',       'struc_data': HorizonWaltz},
+    {'name': 'DriftingBandit', 'dir': 'DB',  'experiment': 'exp0', 'split': 'Train', '101Name': 'bahrami2020four/exp.csv',              'struc_data': FourDrifting},
+    {'name': 'ChangingBandit', 'dir': 'CB',  'experiment': 'exp0', 'split': 'OOD',   '101Name': 'xiong2023neural/exp1.csv',             'struc_data': TwoChanging},
+    {'name': 'HorizonSade',    'dir': 'HSa', 'experiment': 'exp0', 'split': 'OOD',   '101Name': 'sadeghiyeh2020temporal/exp1.csv',      'struc_data': HorizonSade},
+    {'name': 'HorizonFeng',    'dir': 'HF',  'experiment': 'exp0', 'split': 'OOD',   '101Name': 'feng2021dynamics/exp1.csv',            'struc_data': HorizonFeng},
+    {'name': 'MaggiesFarm',    'dir': 'MF',  'experiment': 'exp0', 'split': 'OOD',   '101Name': None,                                   'struc_data': MaggiesFarm_struc},
 ])
 
 # Match and map text datasets onto the registry
@@ -84,7 +84,7 @@ for _, exp in experiments.iterrows():
         "name": name,
         "removed_rows": len(raw_struc) - len(struc),
         "total_rows": len(struc),
-        "nan_fraction": (len(raw_struc) / len(struc)) if len(struc) > 0 else 1
+        "nan_fraction": ((len(raw_struc) - len(struc)) / len(raw_struc)) if len(raw_struc) > 0 else 0
     })
 
     """
@@ -106,12 +106,12 @@ for _, exp in experiments.iterrows():
     clean_struc = pd.DataFrame({
         'participant':  struc['participant'].astype('int32'),
         'game':         (1 + struc['task']).astype('int32'),
-        'horizon':      struc['horizon'].astype('int32') if name in ['HorizonSade', 'HorizonSomer', 'HorizonFeng', 'HorizonWaltz'] else -1
+        'horizon':      struc['horizon'].astype('int32') if name in ['HorizonSade', 'HorizonSomer', 'HorizonFeng', 'HorizonWaltz'] else -1,
         'trial':        (1 + struc['trial']).astype('int32'),
         'forced':       struc['forced'].astype('int32') if 'forced' in struc.columns else 0,
         'human_choice': struc['choice'].astype('int32') if 'choice' in struc.columns else 0,
         'reward':       struc['reward'].astype('int32') if 'reward' in struc.columns else 0,
-        'hazard_rate':  (struc['hazard_rate'] * 10 if name == 'ChangingBandit' else 0).astype('float64'),
+        'hazard_rate':  (struc['hazard_rate'] * 10).round().astype('int32') if name == 'ChangingBandit' else 0,
     })
 
     # Dynamically resolve max horizon lengths for contextual tasks
@@ -146,7 +146,7 @@ for _, exp in experiments.iterrows():
         raise ValueError(f"Unknown split type: {exp['split']} for experiment {name}")
        
     # create data folders for each experiment 
-    Path(f"{script_dir}/Data/{name}").mkdir(parents=True, exist_ok=True)
+    Path(f"{script_dir}/Data/{exp['dir']}").mkdir(parents=True, exist_ok=True)
 
     # save the split results for reporting
     for split_label, split_participants in splits.items():
@@ -155,10 +155,10 @@ for _, exp in experiments.iterrows():
         sub_text = text[text['participant'].isin(split_participants)]
         
         # Export natural language prompts to CSV
-        sub_text.to_csv(f"{script_dir}/Data/{name}/text_{split_label}_{exp['experiment']}.csv", index=False)
+        sub_text.to_csv(f"{script_dir}/Data/{exp['dir']}/{split_label}_text_{exp['experiment']}.csv", index=False)
 
-        # Export clean tensor states to NumPy
-        np.save(f"{script_dir}/Data/{name}/struc_{split_label}_{exp['experiment']}.npy", sub_data.to_numpy())
+        # Export clean tensor states to NumPy, as integers so that choices can be used as indices
+        np.save(f"{script_dir}/Data/{exp['dir']}/struc_{split_label}_{exp['experiment']}.npy", sub_data.to_numpy(dtype=np.int64))
 
 
 # --- Summary Report ---
