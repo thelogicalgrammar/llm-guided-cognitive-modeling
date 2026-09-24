@@ -237,25 +237,18 @@ EOF
         sed -i "s|Path/to/your/Models/Qwen3-Coder-Next-Merged|$MODELS/Qwen3-Coder-Next|" OpenEvolve/config.yaml
         grep -nE "name:|api_base|parallel_evaluations|max_tasks_per_child|template_dir" OpenEvolve/config.yaml
 
-[ ] 4.2 OpenEvolve/run_OpEvProg6Job.sh: fix the paths (the script ships with placeholders).
+[ ] 4.2 OpenEvolve/run_OpEvProg6Job.sh needs no editing: it sources env.sh and takes the
+        model, output directory and iteration count from the environment.
 
-        mkdir -p $PROJECT/logs $PROJECT/Results
-        sed -i "s|/path/to/your/Models/Qwen3-Coder-Next-Merged|$MODELS/Qwen3-Coder-Next|" OpenEvolve/run_OpEvProg6Job.sh
-        sed -i "s|/path/to/your/Logs|$PROJECT/logs|" OpenEvolve/run_OpEvProg6Job.sh
-        sed -i "s|/path/to/your/Results/OpenEvolve/|$PROJECT/Results/OpenEvolve/|" OpenEvolve/run_OpEvProg6Job.sh
+        SEARCH_MODEL    default $MODELS/Qwen3-Coder-Next (use $COGMOD_MERGED_MODEL for the fine-tuned run)
+        SEARCH_OUTPUT   default $PROJECT/Results/OpenEvolve
+        ITERATIONS      default: max_iterations from config.yaml
 
-        Add the data path next to the other exports (line with OPENAI_API_KEY):
+        grep -nE "SEARCH_MODEL|SEARCH_OUTPUT|ITERATIONS|--account|--time" OpenEvolve/run_OpEvProg6Job.sh
 
-        sed -i "/export OPENAI_API_KEY/a export COGMOD_DATA_PATH=$PROJECT/Data\nexport HF_HOME=$PROJECT/hf" OpenEvolve/run_OpEvProg6Job.sh
-        grep -nE "MODEL_DIR=|LOG_FILE=|COGMOD_DATA_PATH|HF_HOME|--output" OpenEvolve/run_OpEvProg6Job.sh
-
-        Keep the existing OMP_NUM_THREADS=1 / MKL / OPENBLAS / NUMEXPR exports: they matter
-        for the NumPy parts of the fitting.
-
-[ ] 4.3 Raise the wall time (`#SBATCH --time`) well above 3:35, e.g. 24:00:00, and lower the
-        vLLM context if you like (prompts are ~6-10k tokens):
-
-          --max-model-len 32768 \
+[ ] 4.3 The script asks for 24 hours and serves with --max-model-len 32768 (prompts are
+        ~6-10k tokens). Change either in the script if you want a shorter job or more context.
+        It also stops early, printing the server log, if vLLM fails to start.
 
 [ ] 4.4 Quick local check that the evaluator can read the data and fit a program, before
         burning GPU time (takes ~1 minute on a login node):
@@ -291,13 +284,12 @@ print(r.metrics)"
         To test the merged model instead:  TEST_MODEL_DIR=$MODELS/Qwen3-Coder-Next-Merged sbatch ...
 
 
-[ ] 5.1 Copy the job script, set a short time limit and few iterations.
+[ ] 5.1 Run a short search with the base model.
 
-        cp OpenEvolve/run_OpEvProg6Job.sh OpenEvolve/run_pilot.sh
-        sed -i "s|--time=3:35:00|--time=2:00:00|" OpenEvolve/run_pilot.sh
-        sed -i "s|openevolve-run \(.*\)--config|openevolve-run \1--iterations 200 --config|" OpenEvolve/run_pilot.sh
-        sbatch --account=$ACCOUNT OpenEvolve/run_pilot.sh
+        ITERATIONS=600 sbatch --time=2:30:00 OpenEvolve/run_OpEvProg6Job.sh
         squeue -u $USER
+
+        600 iterations rather than 200, because every job pays ~20 minutes of startup.
 
 [ ] 5.2 While it runs, watch the vLLM server: if nothing is waiting, raise parallel_evaluations
         in config.yaml (60 now) for the full runs.
@@ -322,22 +314,19 @@ print(r.metrics)"
 
 [ ] 6.1 Base model.
 
-        sbatch --account=$ACCOUNT OpenEvolve/run_OpEvProg6Job.sh
+        sbatch OpenEvolve/run_OpEvProg6Job.sh
 
 [ ] 6.2 Resume after a wall-time stop (checkpoints are written every 30 iterations).
 
         ls $PROJECT/Results/OpenEvolve/checkpoints/
         # add to the openevolve-run line in the job script:
         #   --checkpoint $PROJECT/Results/OpenEvolve/checkpoints/checkpoint_<N>
-        sbatch --account=$ACCOUNT OpenEvolve/run_OpEvProg6Job.sh
+        sbatch OpenEvolve/run_OpEvProg6Job.sh
 
-[ ] 6.3 Fine-tuned model: same settings, only MODEL_DIR and --output change.
+[ ] 6.3 Fine-tuned model: same script, different model and output directory.
 
-        sed -i 's|Qwen3-Coder-Next"|Qwen3-Coder-Next-Merged"|; s|Results/OpenEvolve/|Results/OpenEvolveMerged/|' OpenEvolve/run_OpEvProg6Job.sh
-        sed -i "s|$MODELS/Qwen3-Coder-Next\"|$MODELS/Qwen3-Coder-Next-Merged\"|" OpenEvolve/config.yaml
-        grep -nE "MODEL_DIR=|--output" OpenEvolve/run_OpEvProg6Job.sh
-        grep -n "name:" OpenEvolve/config.yaml
-        sbatch --account=$ACCOUNT OpenEvolve/run_OpEvProg6Job.sh
+        SEARCH_MODEL=$COGMOD_MERGED_MODEL SEARCH_OUTPUT=$PROJECT/Results/OpenEvolveMerged \
+            sbatch OpenEvolve/run_OpEvProg6Job.sh
 
 [ ] 6.4 Back up the results after each run: project space is not deleted automatically,
         but it is not backed up either.
