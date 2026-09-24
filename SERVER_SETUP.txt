@@ -224,9 +224,15 @@ EOF
         Needs ~160 GB of scratch for the merged copy. Skip all of 3.2/3.3 if you are only
         doing the base-model run.
 
-[ ] 3.3 Check the merged folder has what vllm needs (tokenizer + chat template).
+[ ] 3.3 Check the merged model: files vllm needs, and that the LoRA actually changed the
+        weights it targets. PEFT warns "Unsupported layer type 'Qwen3NextExperts'" on this
+        model, and can silently skip the expert adapters.
 
         ls $MODELS/Qwen3-Coder-Next-Merged | grep -E "tokenizer|chat_template|safetensors" | head
+        python LLMFineTuning/checkMerge.py
+
+        It exits 0 if the targeted weights differ from the base model, and 1 if the experts
+        are identical, which means only the attention and dense projections were merged.
 
         Do the BASE model run first (step 5-6); it needs no merge.
 
