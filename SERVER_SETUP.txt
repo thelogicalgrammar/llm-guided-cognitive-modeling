@@ -42,7 +42,10 @@ against the files in this repo (on a laptop, not on Snellius itself).
         Keep them project-local: OMP_NUM_THREADS=1 and HF_HOME would be wrong defaults
         for your other work.
 
-        Paste the next block as-is; the closing EOF must stay at the start of its line.
+        env.sh ships with the repo, so after cloning (step 1.3) you only need the alias
+        below. Check the paths in it first: PROJECT, ACCOUNT and the venv location.
+        To recreate it from scratch, paste this block as-is; the closing EOF must stay
+        at the start of its line.
 
 cat > $HOME/llm-guided-cognitive-modeling/env.sh <<'EOF'
 # source this to work on llm-guided-cognitive-modeling:  source env.sh
