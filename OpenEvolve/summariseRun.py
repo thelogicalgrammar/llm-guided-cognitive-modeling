@@ -72,7 +72,13 @@ if __name__ == "__main__":
             print("  first few:", [(round(s, 4), i) for s, i in improvements[:5]])
 
     if len(sys.argv) > 2:
-        log = Path(sys.argv[2]).read_text(errors="replace")
+        log_path = Path(sys.argv[2])
+        log = log_path.read_text(errors="replace")
+        # SLURM writes warnings and LLM errors to the matching errors_*.txt, not to the output log
+        errors_path = log_path.with_name(log_path.name.replace("results_", "errors_")).with_suffix(".txt")
+        if errors_path.exists():
+            log += errors_path.read_text(errors="replace")
+            print(f"\n(also read {errors_path.name})")
         iterations = re.findall(r"Iteration (\d+): Program", log)
         no_diff = len(re.findall(r"No valid diffs found", log))
         times = [float(t) for t in re.findall(r"completed in ([\d.]+)s", log)]
@@ -82,7 +88,8 @@ if __name__ == "__main__":
         if times:
             times.sort()
             print(f"  iteration time: median {times[len(times)//2]:.0f}s, max {times[-1]:.0f}s")
-        for pattern, label in [(r"os\.fork\(\) was called", "fork warnings (JAX deadlock risk)"),
+        for pattern, label in [(r"404|does not exist", "LLM requests refused (model name mismatch?)"),
+                               (r"os\.fork\(\) was called", "fork warnings (JAX deadlock risk)"),
                                (r"Feature dimension", "programs dropped from the database"),
                                (r"Timeout|timed out", "timeouts"),
                                (r"context length|maximum context", "context length errors")]:
