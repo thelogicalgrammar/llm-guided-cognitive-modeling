@@ -308,6 +308,10 @@ print(r.metrics)"
 [ ] 5.3 After it finishes, check the log (results_OpenEvolve_<jobid>.log):
 
         L=results_OpenEvolve_<jobid>.log
+        python OpenEvolve/summariseRun.py $PROJECT/Results/OpenEvolve $L
+        # a run that stores only the initial program means no LLM response ever became a
+        # program: check the model name first, then the vllm log
+        grep -ciE "404|not found|does not exist" $L $PROJECT/logs/vllm_*.log
         grep -c "os.fork() was called" $L            # must be 0 (workers must spawn, not fork)
         grep -o "jax_fit=[0-9.]*" $L | sort | uniq -c # how often gradient fitting worked; 1.0 is best
         grep -c "No valid diffs found" $L            # wasted LLM requests

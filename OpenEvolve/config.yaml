@@ -7,7 +7,9 @@ max_tasks_per_child: 100   # restart evaluation workers every 100 programs; sett
 # LLM configuration
 llm:
   models:
-    - name: "Path/to/your/Models/Qwen3-Coder-Next-Merged"
+    # the job script passes --primary-model and --api-base, matching the model it serves;
+    # these values are only used when openevolve-run is called without them
+    - name: "Path/to/your/Models/Qwen3-Coder-Next"
       api_base: "http://localhost:11434/v1"   # vLLM server port
     
   temperature: 0.85

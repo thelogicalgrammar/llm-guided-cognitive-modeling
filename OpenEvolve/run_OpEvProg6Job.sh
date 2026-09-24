@@ -64,7 +64,9 @@ export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
 # Run the openevolve search; add --checkpoint <dir> to resume
-openevolve-run OpenEvolve/initial_program.py OpenEvolve/evaluator.py --config OpenEvolve/config.yaml $ITERATION_ARG --output "$OUTPUT_DIR"
+# --primary-model must match what vllm serves, or every request fails with "model not found"
+openevolve-run OpenEvolve/initial_program.py OpenEvolve/evaluator.py --config OpenEvolve/config.yaml \
+  --primary-model "$MODEL_DIR" --api-base "http://localhost:11434/v1" $ITERATION_ARG --output "$OUTPUT_DIR"
 
 # close server
 kill $SERVER_PID
