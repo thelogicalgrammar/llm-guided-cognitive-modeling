@@ -255,8 +255,10 @@ EOF
 
         grep -nE "SEARCH_MODEL|SEARCH_OUTPUT|ITERATIONS|--account|--time" OpenEvolve/run_OpEvProg6Job.sh
 
-[ ] 4.3 The script asks for 24 hours and serves with --max-model-len 32768 (prompts are
-        ~6-10k tokens). Change either in the script if you want a shorter job or more context.
+[ ] 4.3 The script asks for 24 hours and serves with --max-model-len 65536 (MAX_MODEL_LEN
+        overrides it). 32768 was not enough: evolved programs grow to a few thousand lines, and
+        with the current program plus the quoted top programs a run logged 19755 context-length
+        errors, losing about a quarter of its iterations.
         It also stops early, printing the server log, if vLLM fails to start.
 
 [ ] 4.4 Quick local check that the evaluator can read the data and fit a program, before

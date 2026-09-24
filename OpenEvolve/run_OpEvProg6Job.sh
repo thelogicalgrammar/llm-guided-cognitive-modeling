@@ -43,7 +43,7 @@ vllm serve $MODEL_DIR \
   --port 11434 \
   $CHAT_TEMPLATE_ARG \
   --quantization fp8 \
-  --max-model-len 32768 \
+  --max-model-len ${MAX_MODEL_LEN:-65536} \
   --tensor-parallel-size 2 \
   > "$LOG_FILE" 2>&1 &
 SERVER_PID=$!

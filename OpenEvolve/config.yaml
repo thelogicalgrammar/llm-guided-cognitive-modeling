@@ -129,7 +129,10 @@ prompt:
     Novel cognitive mechanisms, latent states, memory systems, or belief representations are allowed if they improve prediction and remain cognitively plausible.
 
     
+  num_top_programs: 2        # evolved programs grow large, and every one of them is quoted in the prompt
+  num_diverse_programs: 1
   include_artifacts: True
+  max_artifact_bytes: 8192   # the per-experiment feedback is enough; long tracebacks crowd out the program
   
 database:
   population_size: 800
