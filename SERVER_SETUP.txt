@@ -201,11 +201,11 @@ EOF
                 s|/path/to/your/Models/Qwen3-Coder-Next-Merged|$MODELS/Qwen3-Coder-Next-Merged|" LLMFineTuning/mergeLoRA.py
         sed -n '14,16p' LLMFineTuning/mergeLoRA.py
 
-        The merge needs packages the search does not (step 1.5 lists them as optional).
-        It runs on CPU, so the CPU build of torch is enough and much smaller:
+        The merge needs packages the search does not (step 1.5 lists them as optional):
 
-        pip install torch --index-url https://download.pytorch.org/whl/cpu
-        pip install transformers peft accelerate
+        pip install torch transformers peft accelerate      # CUDA build, also used by LLMPredict.py
+        # the merge itself runs on CPU (device_map="cpu"), so the smaller CPU build works too:
+        # pip install torch --index-url https://download.pytorch.org/whl/cpu
 
         The job script writes logs to result/ and error/, and activates FT/ from the
         submit directory:
