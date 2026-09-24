@@ -206,9 +206,12 @@ EOF
         Checkpoints 10-63 are available; 40 is the one the paper used, though validation
         loss was still falling (63: 0.2813 vs 40: 0.2853).
 
-        The merge needs packages the search does not (step 1.5 lists them as optional):
+        The merge needs packages the search does not (step 1.5 lists them as optional).
+        PEFT must match the version the adapter was trained with, or the MoE expert weights
+        fail to load with "size mismatch for ...mlp.experts..." after 40 minutes of loading:
 
-        pip install torch transformers peft accelerate      # CUDA build, also used by LLMPredict.py
+        python -c "import json,os; print('adapter built with peft', json.load(open(os.environ['COGMOD_LORA']+'/adapter_config.json'))['peft_version'])"
+        pip install torch transformers accelerate "peft==0.18.1"   # 0.18.1 is what this adapter needs
         # the merge itself runs on CPU (device_map="cpu"), so the smaller CPU build works too:
         # pip install torch --index-url https://download.pytorch.org/whl/cpu
 
