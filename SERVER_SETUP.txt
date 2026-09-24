@@ -193,13 +193,16 @@ EOF
 
         huggingface-cli download CasparFermin/Qwen3-Coder-Next-LoRA --local-dir $PROJECT/FineTune/checkpoint-40
 
-        mergeLoRA.py has three placeholder paths on lines 14-16 (base model in, LoRA in,
-        merged model out). Replace them:
+        mergeLoRA.py takes its three paths from the environment (or from lines 15-17 if
+        you prefer to edit them). Note that the LoRA repository nests its checkpoints:
 
-        sed -i "s|/path/to/your/Models/Qwen3-Coder-Next\"|$MODELS/Qwen3-Coder-Next\"|; \
-                s|/path/to/your/Data/FineTune/checkpoint-40/|$PROJECT/FineTune/checkpoint-40/|; \
-                s|/path/to/your/Models/Qwen3-Coder-Next-Merged|$MODELS/Qwen3-Coder-Next-Merged|" LLMFineTuning/mergeLoRA.py
-        sed -n '14,16p' LLMFineTuning/mergeLoRA.py
+        export COGMOD_BASE_MODEL=$MODELS/Qwen3-Coder-Next
+        export COGMOD_LORA=$PROJECT/FineTune/checkpoint-40/FineTuneResults/checkpoint-40
+        export COGMOD_MERGED_MODEL=$MODELS/Qwen3-Coder-Next-Merged
+        ls $COGMOD_LORA/adapter_config.json          # the script checks this before loading anything
+
+        Checkpoints 10-63 are available; 40 is the one the paper used, though validation
+        loss was still falling (63: 0.2813 vs 40: 0.2853).
 
         The merge needs packages the search does not (step 1.5 lists them as optional):
 
