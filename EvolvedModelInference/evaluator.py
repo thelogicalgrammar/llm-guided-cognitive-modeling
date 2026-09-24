@@ -1,327 +1,144 @@
-import importlib.util
-import numpy as np
-from openevolve.evaluation_result import EvaluationResult
-import matplotlib.pyplot as plt
-import scipy
-import pandas as pd
-from scipy.optimize import minimize
-import ast
+"""
+Fit selected evolved programs on the training sets and score them on the test sets.
+
+Uses the same fitting machinery as the search (cogmod_core), so the numbers are comparable.
+Writes, per program and experiment, a CSV with one row per free-choice test trial
+(logits, probability of the human choice, nll) plus a summary over experiments.
+
+    python EvolvedModelInference/evaluator.py [Base/Best FineTuned/Best ...]
+
+Data comes from $COGMOD_DATA_PATH, programs from $COGMOD_PROGRAMS_PATH
+(default: EvolvedModelInference/BestModels), results go to $COGMOD_RESULTS_PATH
+(default: <repo>/Results/EvolvedCogModels).
+"""
+import os
+import sys
 import time
+import numpy as np
+import pandas as pd
+import scipy
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 
-# ----- Load data globally so that it can be accessed by all processes -----
-# Gets the absolute path to the file currently running
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from cogmod_core import (load_blocks, evalModel, fit_experiment, clear_jax_caches, load_program,
+                         FIT_MAXFEV, FIT_STARTS, FIT_METHOD)
+
 script_dir = Path(__file__).resolve().parent
-results_dir = f"{script_dir}/../Results/EvolvedCogModels/"
+data_path = os.environ.get("COGMOD_DATA_PATH", str(script_dir.parent / "Data"))
+results_dir = Path(os.environ.get("COGMOD_RESULTS_PATH", str(script_dir.parent / "Results" / "EvolvedCogModels")))
+programs_dir = Path(os.environ.get("COGMOD_PROGRAMS_PATH", str(script_dir / "BestModels")))
 
-# create main results folder
-Path(results_dir).mkdir(parents=True, exist_ok=True)
-
+# the five experiments the search used, followed by the four held-out ones
 experiments = [
-    {'name': 'TwoBandit', 'experiment': 'exp1', 'num_options': 2},
-    {'name': 'TwoBandit', 'experiment': 'exp2', 'num_options': 2},
-    {'name': 'DriftingBandit', 'experiment': 'exp0', 'num_options': 4},
-    {'name': 'HorizonSomer', 'experiment': 'exp0', 'num_options': 2},
-    {'name': 'HorizonWaltz', 'experiment': 'exp0', 'num_options': 2},
-    {'name': 'HorizonSade', 'experiment': 'exp0', 'num_options': 2},
-    {'name': 'HorizonFeng', 'experiment': 'exp0', 'num_options': 2},
-    {'name': 'ChangingBandit', 'experiment': 'exp0', 'num_options': 2},
-    {'name': 'MaggiesFarm', 'experiment': 'exp0', 'num_options': 3},
+    {'name': 'TwoBandit',      'dir': 'TB',  'experiment': 'exp1', 'num_options': 2, 'held_out': False},
+    {'name': 'TwoBandit',      'dir': 'TB',  'experiment': 'exp2', 'num_options': 2, 'held_out': False},
+    {'name': 'DriftingBandit', 'dir': 'DB',  'experiment': 'exp0', 'num_options': 4, 'held_out': False},
+    {'name': 'HorizonSomer',   'dir': 'HSo', 'experiment': 'exp0', 'num_options': 2, 'held_out': False},
+    {'name': 'HorizonWaltz',   'dir': 'HW',  'experiment': 'exp0', 'num_options': 2, 'held_out': False},
+    {'name': 'HorizonSade',    'dir': 'HSa', 'experiment': 'exp0', 'num_options': 2, 'held_out': True},
+    {'name': 'HorizonFeng',    'dir': 'HF',  'experiment': 'exp0', 'num_options': 2, 'held_out': True},
+    {'name': 'ChangingBandit', 'dir': 'CB',  'experiment': 'exp0', 'num_options': 2, 'held_out': True},
+    {'name': 'MaggiesFarm',    'dir': 'MF',  'experiment': 'exp0', 'num_options': 3, 'held_out': True},
 ]
 
-data_path = f"{script_dir}/../Data/"
+DEFAULT_MODELS = ["Base/1000", "Base/1500", "Base/2000", "Base/Best",
+                  "FineTuned/1000", "FineTuned/1500", "FineTuned/2000", "FineTuned/Best"]
 
-EXPERIMENT_DATA = []
 
-for exp in experiments:
-    train_data = np.load(f"{data_path}{exp['name']}/proc_Train_{exp['experiment']}.npy")
-    test_data = np.load(f"{data_path}{exp['name']}/proc_Test_{exp['experiment']}.npy")
+def experiment_files(exp):
+    """Training and test file of an experiment, or None if either is missing"""
+    train = Path(data_path) / exp['dir'] / f"struc_Train_{exp['experiment']}.npy"
+    test = Path(data_path) / exp['dir'] / f"struc_Test_{exp['experiment']}.npy"
+    return (train, test) if train.exists() and test.exists() else None
 
-    EXPERIMENT_DATA.append({
-        "train": train_data,
-        "test": test_data
-    })
-    
-# ----- Helper functions for model evaluation -----
+def trial_table(blocks, logits, num_options):
+    """One row per free-choice trial of the test set, in the order of the input data"""
+    block, position = blocks['row_block'], blocks['row_position']
+    free = blocks['free'][block, position]
+    rows = {
+        'participant': blocks['participant_of_block'][block][free],
+        'game': blocks['game_of_block'][block][free],
+        'horizon': blocks['horizon'][block, position][free],
+        'trial': blocks['trial'][block, position][free],
+        'reward': blocks['reward'][block, position][free],
+        'human_choice': blocks['choice'][block, position][free],
+    }
+    row_logits = logits[block, position][free]                              # (n_free, num_options)
+    chosen = row_logits[np.arange(len(row_logits)), rows['human_choice']]
+    lse = scipy.special.logsumexp(row_logits, axis=1)
+    rows['HCProb'] = np.exp(chosen - lse)
+    for option in range(num_options):
+        rows[f'EvCogModLog_{option}'] = row_logits[:, option]
+    rows['nll'] = lse - chosen
+    return pd.DataFrame(rows)
 
-def compute_source_complexity(program_path):
-    """Compute a simple AST-based complexity score for the source file."""
-    with open(program_path, "r", encoding="utf-8", errors="replace") as source_file:
-        source = source_file.read()
+def evaluate_program(model_path):
+    """Fit one program on every experiment's training set and score it on the test set"""
+    program_path = programs_dir / model_path / "best_program.py"
+    program = load_program(str(program_path))
+    np.seterr(all='raise', under='ignore')
 
-    tree = ast.parse(source, filename=program_path)
-    complexity = sum(1 for _ in ast.walk(tree))
-    return complexity
+    out_dir = results_dir / model_path
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-def save_loss_curve(loss_history, save_path="loss_curve.png", window=None):
-    """
-    Save a graph of loss over training iterations.
-
-    Parameters
-    ----------
-    losses : list or np.ndarray
-        Sequence of mean NLL values.
-    save_path : str
-        Output image path.
-    window : int or None
-        Optional moving-average smoothing window.
-    """
-
-    losses = np.asarray(loss_history, dtype=float)
-
-    plt.figure(figsize=(10, 5))
-
-    # raw losses
-    plt.plot(losses, label="Mean NLL")
-
-    # optional smoothing
-    if window is not None and window > 1:
-        kernel = np.ones(window) / window
-        smooth = np.convolve(losses, kernel, mode="valid")
-
-        smooth_x = np.arange(window - 1, len(losses))
-        plt.plot(smooth_x, smooth, label=f"Moving Avg ({window})")
-
-    plt.xlabel("Iteration")
-    plt.ylabel("Mean NLL")
-    plt.title("Training Loss Over Iterations")
-    plt.legend()
-    plt.grid(True)
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
-    plt.close()
-
-# ---- Model Runner -----
-def evalModel(x, data, num_op, param_keys, model, full_logits = False):
-    """
-    Evaluate the model. First, load in the data. Second, create the model. Third, loop over each trial, and apply initilize, when a new participant appears.
-    
-    All experiments contain the data columns:
-    participant:    int32   - The participant ID
-    game:           int32   - The number of the game, starts at 1
-    horizon:        int32   - The number of trials per game, -1 if not known by the participant
-    trial:          int32   - The trial number, resets every game and starts at 1
-    forced:         int32   - Either 0 or 1, with 1 representing a non-trial, which won't be taken into account during computation of nll
-    human_choice:   int32   - The human choice that has to be modelled
-    reward:         int32   - The reward as a consequence of the human_choice
-    hazard_rate:    int32   - Indicates the degree of abrupt expected point change, it ranges from 0-10, with 1 representing a 10% change
-    """
-    # create the parameter dictionary from the static keys and dynamic values
-    params_dict = dict(zip(param_keys, x))
-
-    # create bare-bones model object
-    model.set_params(num_op, params_dict)
-
-    nll = 0.0
-    prev_participant = None
-    prev_game = None
-
-    # store logits
-    all_logits = []
-
-    all_participant = data[:, 0]
-    all_game = data[:, 1]
-    all_horizon = data[:, 2]
-    all_trial = data[:, 3]
-    all_forced = data[:, 4]
-    all_human_choice = data[:, 5]
-    all_reward = data[:, 6]
-    all_hazard_rate = data[:, 7]
-
-    # loop over each row (i.e., trial) in the data
-    for i in range(len(data)):
-
-        # extract the data from the row
-        participant = all_participant[i]
-        game = all_game[i]
-        horizon = all_horizon[i]
-        trial = all_trial[i]
-        forced = all_forced[i]
-        human_choice = all_human_choice[i]
-        reward = all_reward[i]
-        hazard_rate = all_hazard_rate[i]
-
-        # Initialize model state per participant
-        if participant != prev_participant:
-            model.participant_reset()
-            prev_participant = participant
-            prev_game = None
-
-        # Reset game-specific variables
-        if game != prev_game:
-            model.game_reset(game, horizon, hazard_rate)
-            prev_game = game
-
-        # Predict action probabilities
-        logits = model.predict(game, trial, horizon, hazard_rate, forced)
-
-        if forced == 0:
-            # store logits for vectorized computations later
-            all_logits.append(logits)
-
-        # Update model based on human choice and reward
-        model.update(game, trial, horizon, hazard_rate, forced, human_choice, reward)
-
-    # transform list of logits to numpy array
-    npall_logits = np.array(all_logits)
-
-    # prepare for slicing the logits
-    choices = data[data[:, 4] == 0, 5].astype(int)
-    row_indices = np.arange(len(choices))
-
-    # get safe logits to prevent under/overflow in logsumexp
-    safe_logits = np.clip(npall_logits, -10000, 10000)
-
-    # compute nll
-    nll = np.mean(scipy.special.logsumexp(safe_logits, axis = 1) - safe_logits[row_indices, choices])
-
-    # set best_nll and best_params as global so they are consistent across functions
-    global best_nll, best_params
-
-    if full_logits:
-        return nll, safe_logits
-    else: 
-        loss_history.append(nll)
-        if nll < best_nll:
-            best_nll = nll
-            best_params = params_dict
-
-        return nll
-
-# ---- Model Orchestrator -----
-def run_model(program_path, max_eval, model_path):
-    """
-    This function is called once for each iteration by OpenEvolve, which includes:
-    1. training the model by optimizing the adjustable parameters.
-    2. returning feedback metrics.
-    """
-
-    # load program
-    spec = importlib.util.spec_from_file_location("program", program_path)
-    program = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(program)
-
-    # get source_complexity based on model AST for combined_score penalization
-    source_complexity = compute_source_complexity(program_path)
-
-    # get parameter bounds, the keys, and number of parameters
     param_bounds = program.define_parameters_and_bounds()
     param_keys = list(param_bounds.keys())
-    parameter_count = len(param_bounds)
 
-    # compute model complexity
-    # model_complexity = 2e-9 * (source_complexity ** 2) + 2e-4 * (parameter_count ** 2)
-    model_complexity = float(source_complexity + (parameter_count * 150))
-
-    # construct the model
-    model = program.Model()
-
-    # initialize arrays for train and test nlls
-    train_nlls = []
-    test_nlls = []
-
-    # loop over experiments and store results
-    results = []
+    summary = []
     for i, exp in enumerate(experiments):
+        files = experiment_files(exp)
+        if files is None:
+            print(f"{model_path}: skipping {exp['name']}_{exp['experiment']}, data not found in {data_path}", flush=True)
+            continue
+        train_file, test_file = files
 
         start_time = time.time()
+        train_blocks, test_blocks = load_blocks(np.load(train_file)), load_blocks(np.load(test_file))
 
-        # set best_nll and best_params as global so they are consistent across functions
-        global best_nll, best_params
-        best_nll = np.inf
-        best_params = {}
-
-        # get data for this experiment
-        train_data = EXPERIMENT_DATA[i]["train"]
-        test_data = EXPERIMENT_DATA[i]["test"]
-
-        # get number of options
-        num_options = exp['num_options']
-
-        # extract parameters from the helper function defined by the LLM
-        init_param_dict = program.get_init_param(i+1)
-
-        # raise an error if there is a mismatch between the keys in the bounds and the keys in the initial parameters
-        if set(param_keys) != set(init_param_dict.keys()):
-            raise ValueError(f"Mismatch between parameter keys in bounds and initial values. "
-                            f"Bounds keys: {set(param_bounds.keys())}, Initial values keys: {set(init_param_dict.keys())}")
-        
-        # get initial parameter values in the correct order for optimization
+        # the initial values of experiments 1-5 are the ones the search used; held-out experiments fall back to the defaults
+        init_param_dict = program.get_init_param(i + 1)
         param_init = np.array([init_param_dict[k] for k in param_keys], dtype=np.float64)
-            
-        global loss_history
-        loss_history = []
 
-        # run optimization of trainable parameters
-        result = minimize(
-            evalModel,
-            x0=param_init,
-            args=(train_data, num_options, param_keys, model, False),
-            options={'maxfev': max_eval},
-            method='Powell',
-            bounds=list(param_bounds.values())
-        )
-        nEval = result.nfev
+        fit = fit_experiment(program, train_blocks, exp['num_options'], param_bounds, param_init, seed=i,
+                             n_starts=FIT_STARTS, max_eval=FIT_MAXFEV, method=FIT_METHOD)
 
-        # print("Best loss:", min(loss_history), flush=True)
-        # save_loss_curve(loss_history, save_path=f"Models/{model_path}/Train_loss_curve_{exp["name"]}_{exp["experiment"]}.png", window=None)
-        loss_history = []
+        # score the fitted parameters on the test set and keep the logits of every trial
+        params = np.array([fit['params'][k] for k in param_keys], dtype=np.float64)
+        test_nll, logits = evalModel(params, test_blocks, exp['num_options'], param_keys, program.Model(), return_logits=True)
 
-        # evaluate test_data with the best parameters found during training, and get the logits for further analysis
-        nll, all_logits = evalModel(list(best_params.values()), test_data, num_options, param_keys, model, True)
-        test_nlls.append(nll)
-        train_nlls.append(best_nll)
+        # participant and game of each block, for the per-trial table
+        raw = np.load(test_file)
+        block = test_blocks['row_block']
+        for field, column in [('participant_of_block', 0), ('game_of_block', 1)]:
+            test_blocks[field] = np.zeros(test_blocks['n_blocks'], dtype=np.int64)
+            test_blocks[field][block] = raw[:, column]
 
-        # compute combined_score
-        comb_score = np.exp(-best_nll)
+        table = trial_table(test_blocks, logits, exp['num_options'])
+        table.to_csv(out_dir / f"{exp['name']}_{exp['experiment']}.csv", index=False)
 
-        # remove the rows that have 'forced' in them
-        test_data = test_data[test_data[:, 4] != 1]
-        
-        # get probabilities of the model picking the right answer
-        human_choices = test_data[:, 5].astype(int)
-        row_indices = np.arange(len(human_choices))
-        prob_correct = np.exp(all_logits[row_indices, human_choices] - scipy.special.logsumexp(all_logits, axis=1))
+        summary.append({'name': exp['name'], 'experiment': exp['experiment'], 'held_out': exp['held_out'],
+                        'train_nll': fit['nll'], 'test_nll': test_nll, 'jax_fit': float(fit['jax_used']),
+                        'parameters': fit['params'], 'seconds': round(time.time() - start_time, 1)})
+        print(f"{model_path}: {exp['name']}_{exp['experiment']}: train {fit['nll']:.4f}, test {test_nll:.4f}, "
+              f"{'jax' if fit['jax_used'] else 'powell'}, {summary[-1]['seconds']}s", flush=True)
 
-        # Create a dictionary where i is the arm index
-        log_data = {f"EvCogModLog_{log_op}": all_logits[:, log_op] for log_op in range(all_logits.shape[1])}
+    clear_jax_caches()
+    summary = pd.DataFrame(summary)
+    summary.to_csv(out_dir / "Results_summary.csv", index=False)
+    print(f"{model_path}: mean test nll {summary['test_nll'].mean():.4f} over {len(summary)} experiments", flush=True)
+    return model_path, summary['test_nll'].mean()
 
-        # store results
-        pd.DataFrame({'participant': test_data[:, 0], 'game': test_data[:, 1], 
-                      'horizon': test_data[:, 2], 'trial': test_data[:, 3], 
-                      'reward': test_data[:, 6], 'human_choice': human_choices, 
-                      'HCProb': prob_correct, **log_data
-                      }).to_csv(f'{results_dir}{model_path}/{exp['name']}_{exp['experiment']}.csv', index=False)
-
-        print(f"Experiment: {exp['name']}, Combined_score: {comb_score}, train-nll: {best_nll}, test-nll: {nll}, n_eval: {nEval}, model_complexity: {model_complexity}")
-
-        # store all the data in a list of dictionaries
-        results.append({"Experiment": i+1, "combined_score": comb_score, "nll": best_nll, "model_complexity": model_complexity, "parameters": best_params})
-        print("Time For Model Evaluate:", time.time() - start_time)
-            
-    # store total results
-    tot_data = [[experiments[i]['name'], experiments[i]['experiment'], train_nlls[i], test_nlls[i]] for i in range(len(train_nlls))]
-    df = pd.DataFrame(tot_data, columns=['name', 'experiment', 'train_nll', 'test_nll'])
-    print(df)
-    print(df['test_nll'].mean())
-    df.to_csv(f'{results_dir}{model_path}/Results_summary.csv', index=False)
-
-    # return the results as a dataframe
-    return pd.DataFrame(results)
-
-def full_evaluate(model_path):
-    program_path = f"{script_dir}/BestModels/{model_path}/best_program.py"
-    return run_model(program_path, 100, model_path) # minimize with 100 different parameter evaluations
 
 if __name__ == "__main__":
-    # define model paths to evaluate
-    models = ["Base/1000", "Base/1500", "Base/2000", "Base/Best", "FineTuned/1000", "FineTuned/1500", "FineTuned/2000", "FineTuned/Best"]
+    models = sys.argv[1:] or DEFAULT_MODELS
+    print(f"fitting {len(models)} programs with method={FIT_METHOD}, {FIT_STARTS} starts, maxfev={FIT_MAXFEV}")
+    print(f"data: {data_path}\nresults: {results_dir}", flush=True)
 
-    with ProcessPoolExecutor(max_workers=8) as executor:
-    # executor.map automatically runs evaluate_single_model for each model in parallel
-        results = list(executor.map(full_evaluate, models))
-    
-    print(results)
-    
+    workers = min(len(models), int(os.environ.get("COGMOD_WORKERS", 4)))
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        results = list(executor.map(evaluate_program, models))
+
+    print("\nmean test nll per program:")
+    for model_path, mean_nll in sorted(results, key=lambda r: r[1]):
+        print(f"  {model_path:20s} {mean_nll:.4f}")

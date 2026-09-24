@@ -345,9 +345,18 @@ print(r.metrics)"
 7. AFTER THE SEARCH
 -------------------
 
-[ ] 7.1 EvolvedModelInference/evaluator.py still uses the OLD per-trial interface and cannot
-        score programs from these runs. Port it the same way OpenEvolve/evaluator.py was ported
-        (load_blocks + evalModel), or it will fail on every new program.
+[ ] 7.1 Score the selected programs on the test sets. Copy the programs you want from the
+        run's checkpoints into EvolvedModelInference/BestModels/<name>/best_program.py, then:
+
+        python EvolvedModelInference/evaluator.py Base/Best FineTuned/Best
+        # or, for programs kept elsewhere:
+        COGMOD_PROGRAMS_PATH=<dir> python EvolvedModelInference/evaluator.py <name> ...
+
+        It fits each program on the training sets with the same machinery as the search
+        (cogmod_core) and writes, per experiment, one row per free-choice test trial
+        (logits, HCProb, nll) plus Results_summary.csv, into $COGMOD_RESULTS_PATH
+        (default <repo>/Results/EvolvedCogModels). Experiments whose data is missing are
+        skipped with a message.
 
 [ ] 7.2 Refit Rescorla-Wagner with the same budget and optimiser as the evolved models, so the
         comparison is fair. Under the old 20-evaluation budget RW scores 0.476; fitted properly
