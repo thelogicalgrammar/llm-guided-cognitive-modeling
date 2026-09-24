@@ -89,7 +89,10 @@ EOF
 
 [ ] 1.2 Keep home under its 200 GiB quota: caches must not live there.
 
-        export HF_HOME=$PROJECT/hf PIP_CACHE_DIR=$SCRATCH/pipcache TMPDIR=$SCRATCH/tmp
+        env.sh (step 1.0) already sets HF_HOME and TMPDIR. PIP_CACHE_DIR is global, so it
+        belongs in ~/.bashrc instead:
+
+        echo 'export PIP_CACHE_DIR=/scratch-shared/$USER/pipcache' >> ~/.bashrc
 
         One-off, depending on where the Hugging Face cache currently is:
         # still in home:
