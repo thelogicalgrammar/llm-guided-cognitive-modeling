@@ -36,6 +36,11 @@ SCORE_SPLIT = os.environ.get("COGMOD_SCORE_SPLIT", "Val")
 # parameter has to earn its place. Set COGMOD_BIC_PENALTY=0 to score without it.
 BIC_PENALTY = os.environ.get("COGMOD_BIC_PENALTY", "1") == "1"
 
+# Hardcoded constants are tuned by the search across iterations, so they fit the data like
+# parameters and count towards k, at this weight. They are counted more cautiously than they are
+# reported: only non-integer literals, since integers are usually structural (indices, 2, 10).
+CONSTANT_WEIGHT = float(os.environ.get("COGMOD_CONSTANT_WEIGHT", 0.5))
+
 def score_blocks(exp):
     path = os.path.join(data_path, exp['name'], f"struc_{SCORE_SPLIT}_{exp['experiment']}.npy")
     return load_blocks(np.load(path)) if os.path.isfile(path) else None
@@ -57,21 +62,28 @@ def compute_source_complexity(program_path):
 
 def count_hardcoded_constants(program_path):
     """
-    Numeric literals other than 0 and 1 inside the Model class: constants the search has tuned
-    by hand, which act as parameters without being declared or counted by the BIC penalty.
+    Numeric literals inside the Model class, as (reported, charged).
+
+    Reported: everything except 0 and 1, which is what the program is told about.
+    Charged: only non-integer values other than 0.5, since integers are usually structural
+    (indices, 2, 10) while values like 0.18 or 0.0022 are tuned by the search and fit the data
+    like parameters.
     """
     try:
         with open(program_path, "r", encoding="utf-8", errors="replace") as source_file:
             tree = ast.parse(source_file.read(), filename=program_path)
     except Exception:
-        return 0.0
+        return 0.0, 0.0
     model_class = next((node for node in ast.walk(tree)
                         if isinstance(node, ast.ClassDef) and node.name == "Model"), None)
     if model_class is None:
-        return 0.0
-    return float(sum(1 for node in ast.walk(model_class)
-                     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float))
-                     and not isinstance(node.value, bool) and abs(node.value) not in (0, 1)))
+        return 0.0, 0.0
+    values = [node.value for node in ast.walk(model_class)
+              if isinstance(node, ast.Constant) and isinstance(node.value, (int, float))
+              and not isinstance(node.value, bool)]
+    reported = [v for v in values if abs(v) not in (0, 1)]
+    charged = [v for v in reported if not float(v).is_integer() and abs(v) != 0.5]
+    return float(len(reported)), float(len(charged))
 
 def safe_model_complexity(program_path):
     """Model complexity for failed programs, so OpenEvolve can still place them in the feature grid."""
@@ -107,7 +119,8 @@ def run_model(program_path, max_eval, n_starts=1, method="powell"):
     model_complexity = float(source_complexity + (parameter_count * 150))
 
     # numeric literals the search has tuned by hand: parameters in all but name
-    hardcoded_constants = count_hardcoded_constants(program_path)
+    hardcoded_constants, charged_constants = count_hardcoded_constants(program_path)
+    effective_parameters = parameter_count + CONSTANT_WEIGHT * charged_constants
 
     # use JAX for this program until tracing fails once
     use_jax = True
@@ -152,7 +165,7 @@ def run_model(program_path, max_eval, n_starts=1, method="powell"):
             # trials the parameters were fitted on
             if BIC_PENALTY:
                 n_trials = TRAIN_BLOCKS[i]['n_free']
-                score_nll = score_nll + parameter_count * np.log(n_trials) / (2 * n_trials)
+                score_nll = score_nll + effective_parameters * np.log(n_trials) / (2 * n_trials)
 
         # catch all errors (and warnings raised as errors)
         except (FloatingPointError, OptimizeWarning, Exception) as e:
@@ -180,6 +193,7 @@ def run_model(program_path, max_eval, n_starts=1, method="powell"):
     results.attrs['jax_fit'] = n_jax_fits / len(experiments)
     results.attrs['hardcoded_constants'] = hardcoded_constants
     results.attrs['parameter_count'] = float(parameter_count)
+    results.attrs['effective_parameters'] = effective_parameters
     results.attrs['jax_failure'] = jax_failure
     return results
 
@@ -307,18 +321,19 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
         jax_fit, jax_failure = result.attrs.get('jax_fit', 0.0), result.attrs.get('jax_failure')
         hardcoded_constants = result.attrs.get('hardcoded_constants', 0.0)
         parameter_count = result.attrs.get('parameter_count', 0.0)
+        effective_parameters = result.attrs.get('effective_parameters', parameter_count)
         result.drop(columns=['model_complexity'], inplace=True)
         
         # Add artifacts for successful stage 1
         evaluation_artifacts = {
             "Experiment History\n": result.to_dict(orient='records')
         }
-        if hardcoded_constants >= 15:
+        if hardcoded_constants >= 10:
             evaluation_artifacts["hardcoded constants"] = (
-                f"The Model class contains {hardcoded_constants:.0f} numeric literals other than 0 and 1. "
-                "Each is a value tuned by hand across iterations, so it fits the data like a parameter while "
-                "escaping the BIC penalty and making the model harder to interpret. Replace the ones that matter "
-                "with trainable parameters, and delete the rest.")
+                f"The Model class contains {hardcoded_constants:.0f} numeric literals other than 0 and 1, of which "
+                f"{effective_parameters - parameter_count:.1f} parameters' worth are charged in the score: values like "
+                "0.18 or 0.0022 are tuned across iterations and fit the data like parameters, so they are counted as "
+                "such. Replace the ones that matter with trainable parameters, and delete the rest.")
         if method == "jax" and jax_failure:
             evaluation_artifacts["fitting"] = (f"Parameters were fitted with the slower Powell method, because JAX could not trace the program ({jax_failure}). "
                                                "Write array code that also works with jax.numpy: no in-place array assignment, no Python if on array values, "
@@ -334,6 +349,7 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
                 "model_complexity": best_stats['model_complexity'],
                 "parameters": parameter_count,
                 "hardcoded_constants": hardcoded_constants,
+                "effective_parameters": effective_parameters,
                 "jax_fit": jax_fit
             },
             artifacts=evaluation_artifacts

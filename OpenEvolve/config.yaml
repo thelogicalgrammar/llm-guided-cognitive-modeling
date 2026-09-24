@@ -87,8 +87,8 @@ prompt:
 
     Hardcoded constants:
     Numeric literals inside the Model class (0.18, 0.28, 0.012, ...) fit the data exactly like
-    parameters, but escape the BIC penalty and cannot be interpreted or reported. Do not introduce
-    them. When you see them in the current program, either make the ones that matter trainable
+    parameters, because they are tuned across iterations, so each non-integer one counts as half a
+    parameter in the BIC penalty. They also cannot be interpreted or reported. Do not introduce them. When you see them in the current program, either make the ones that matter trainable
     parameters, or remove them; a model with three trainable parameters and no magic numbers is
     worth more than one with thirty tuned constants and the same score.
 
