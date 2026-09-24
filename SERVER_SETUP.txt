@@ -234,6 +234,19 @@ EOF
         It exits 0 if the targeted weights differ from the base model, and 1 if the experts
         are identical, which means only the attention and dense projections were merged.
 
+        The experts WILL be identical: PEFT trains them through target_parameters but does not
+        merge them, whatever version is used (0.18 leaves them alone; 0.19+ changed the layout
+        convention and would scramble a 0.18-era adapter). See
+        https://github.com/unslothai/unsloth-zoo/pull/1232 and
+        https://github.com/vllm-project/vllm/pull/52198. Add the missing deltas directly:
+
+        python LLMFineTuning/mergeExpertDeltas.py --dry-run    # reports |delta| / |W| per tensor
+        python LLMFineTuning/mergeExpertDeltas.py              # rewrites the shards in place
+        python LLMFineTuning/checkMerge.py 5                   # now expects the experts to differ
+
+        This works here because rank_pattern sets r=1 for the expert parameters, so the ordering
+        ambiguity between rank-major and expert-grouped layouts does not arise.
+
         Do the BASE model run first (step 5-6); it needs no merge.
 
 
