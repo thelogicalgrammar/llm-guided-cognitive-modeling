@@ -1,6 +1,6 @@
 # Configuration for function minimization example
 max_iterations: 10000
-checkpoint_interval: 30
+checkpoint_interval: 200   # iterations take seconds now, so checkpoint less often
 max_tasks_per_child: 100   # restart evaluation workers every 100 programs; setting this also makes OpenEvolve start workers with spawn instead of fork,
                            # which is required because the evaluator imports JAX (multithreaded) before the worker processes are created
 
@@ -50,6 +50,14 @@ prompt:
     - Create all state arrays in reset() and keep their shapes and dtypes fixed; do not call float() or int() on parameters or arrays.
     - Only use functions from `np`; do not import other numerical libraries.
     Programs that break these rules still run, but are fitted with a much slower method.
+
+    Common mistakes, seen in one run in five:
+    - Shapes: predict must return (n_games, num_options). A per-game quantity has shape (n_games,) and
+      needs [:, None] before it is combined with a (n_games, num_options) array; build per-option values
+      with np.stack([...], axis=1) rather than by broadcasting.
+    - Parameters: the keys of define_parameters_and_bounds, of get_init_param and of the params_dict that
+      set_params reads must be exactly the same set. Adding a parameter means adding it in all three.
+    - State: every array the model uses must be created in reset(), or predict will find it missing.
 
     Inputs (arrays of shape (n_games,)):
     horizon:      int64   - The number of trials per game, -1 if not known by the participant

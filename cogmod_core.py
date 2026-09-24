@@ -107,7 +107,11 @@ def evalModel(x, blocks, num_op, param_keys, model, return_logits=False):
     params_dict = dict(zip(param_keys, x))
 
     # create bare-bones model object
-    model.set_params(num_op, params_dict)
+    try:
+        model.set_params(num_op, params_dict)
+    except KeyError as e:
+        raise KeyError(f"set_params reads the parameter {e}, which define_parameters_and_bounds does not "
+                       f"declare; it returns {list(param_keys)}") from None
 
     # initialize the latent state of all blocks
     model.reset(blocks['horizon'][:, 0], blocks['hazard_rate'][:, 0])
