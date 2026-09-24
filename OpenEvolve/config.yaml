@@ -77,7 +77,8 @@ prompt:
     - Note: get_init_param is the only place where the experiment number (1 to 5) is available. The Model methods never receive it.
 
     Priority order:
-    1. Improve combined_score.
+    1. Improve combined_score, which is measured on participants the parameter fitting never saw,
+       so a model that only fits the training participants scores badly.
     2. Improve generalization across experiments.
     3. Maintain cognitive plausibility.
     4. Reduce unnecessary parameters and complexity.

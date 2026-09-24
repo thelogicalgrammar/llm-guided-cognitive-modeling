@@ -387,6 +387,11 @@ print(r.metrics)"
 -------------------------------
 
 [ ] The fitting budget and optimiser for every model, including the baseline.
+[ ] That candidates are scored on held-out validation participants, not on the participants
+    their parameters were fitted to (COGMOD_SCORE_SPLIT=Train restores the published behaviour).
+    The first full run showed why: its best program by training score reached 0.6293 there but
+    0.5095 mean test nll, worse than Rescorla-Wagner's 0.4685, with a 0.19 train-test gap on
+    Maggie's Farm.
 [ ] jax_fit and the invalid-edit rate as search-efficiency measures.
 [ ] That models can no longer branch on game numbers (the old interface let them, and every
     published best program did), so results are not directly comparable with the old runs.

@@ -27,6 +27,20 @@ prog_path = os.environ.get("COGMOD_PROG_PATH", "Path/to/your/programs/")  # Upda
 
 TRAIN_BLOCKS = [load_blocks(np.load(os.path.join(data_path, exp['name'], f"struc_Train_{exp['experiment']}.npy"))) for exp in experiments]
 
+# Programs are fitted on the training participants and scored on held-out validation participants,
+# so that models are selected for generalisation rather than for fitting the training set. Set
+# COGMOD_SCORE_SPLIT=Train to score on the training participants instead, as the published runs did.
+SCORE_SPLIT = os.environ.get("COGMOD_SCORE_SPLIT", "Val")
+
+def score_blocks(exp):
+    path = os.path.join(data_path, exp['name'], f"struc_{SCORE_SPLIT}_{exp['experiment']}.npy")
+    return load_blocks(np.load(path)) if os.path.isfile(path) else None
+
+SCORE_BLOCKS = [score_blocks(exp) for exp in experiments] if SCORE_SPLIT != "Train" else [None] * len(experiments)
+if SCORE_SPLIT != "Train" and any(b is None for b in SCORE_BLOCKS):
+    missing = [f"{e['name']}/{e['experiment']}" for e, b in zip(experiments, SCORE_BLOCKS) if b is None]
+    print(f"evaluator: no struc_{SCORE_SPLIT} data for {missing}; those experiments are scored on the training participants")
+
 
 def compute_source_complexity(program_path):
     """Compute a simple AST-based complexity score for the source file."""
@@ -101,6 +115,14 @@ def run_model(program_path, max_eval, n_starts=1, method="powell"):
             elif fit['jax_failure']:
                 use_jax, jax_failure = False, fit['jax_failure']
 
+            # score the fitted parameters on participants the fit never saw
+            train_nll = fit['nll']
+            if SCORE_BLOCKS[i] is not None:
+                parameters = np.array([fit['params'][k] for k in param_keys], dtype=np.float64)
+                score_nll = evalModel(parameters, SCORE_BLOCKS[i], exp['num_options'], param_keys, program.Model())
+            else:
+                score_nll = train_nll
+
         # catch all errors (and warnings raised as errors)
         except (FloatingPointError, OptimizeWarning, Exception) as e:
             # extract traceback
@@ -116,8 +138,8 @@ def run_model(program_path, max_eval, n_starts=1, method="powell"):
             return {'Experiment': i+1, 'error_type': error_type, 'error_message': str(error_message), 'error_location':error_location}
 
         # store all the data in a list of dictionaries
-        results.append({"Experiment": i+1, "combined_score": np.exp(-fit['nll']), "nll": fit['nll'],
-                        "model_complexity": model_complexity, "parameters": fit['params']})
+        results.append({"Experiment": i+1, "combined_score": np.exp(-score_nll), "nll": score_nll,
+                        "train_nll": train_nll, "model_complexity": model_complexity, "parameters": fit['params']})
 
     # clear compiled JAX functions, as every program compiles new ones
     clear_jax_caches()
@@ -184,7 +206,7 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
 
         # Handle different result formats
         if isinstance(result, pd.DataFrame):
-            if result.shape[1] == 5:
+            if result.shape[1] == 6:
                 pass
             else:
                 error_artifacts = {
@@ -248,7 +270,7 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
             )
         
         # compute mean combined score
-        best_stats = result[['combined_score', 'nll', 'model_complexity']].mean().to_dict()
+        best_stats = result[['combined_score', 'nll', 'train_nll', 'model_complexity']].mean().to_dict()
         jax_fit, jax_failure = result.attrs.get('jax_fit', 0.0), result.attrs.get('jax_failure')
         result.drop(columns=['model_complexity'], inplace=True)
         
@@ -266,6 +288,8 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
                 "runs_successfully": 1.0,
                 "combined_score": best_stats['combined_score'],
                 "nll": best_stats['nll'],
+                "train_nll": best_stats['train_nll'],
+                "generalisation_gap": best_stats['nll'] - best_stats['train_nll'],
                 "model_complexity": best_stats['model_complexity'],
                 "jax_fit": jax_fit
             },
