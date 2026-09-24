@@ -371,9 +371,14 @@ print(r.metrics)"
         (default <repo>/Results/EvolvedCogModels). Experiments whose data is missing are
         skipped with a message.
 
-[ ] 7.2 Refit Rescorla-Wagner with the same budget and optimiser as the evolved models, so the
-        comparison is fair. Under the old 20-evaluation budget RW scores 0.476; fitted properly
-        it scores 0.636 and beats both published evolved models.
+[ ] 7.2 Score Rescorla-Wagner through the same path, as the like-for-like baseline. It ships
+        as a program, so it is fitted exactly like an evolved one:
+
+        cp $PROJECT/Results/OpenEvolve/best/best_program.py EvolvedModelInference/BestModels/<run_name>/
+        python EvolvedModelInference/evaluator.py <run_name> RescorlaWagner
+
+        Published test nll to beat (means over the nine experiments): evolved models 0.520
+        (base) and 0.495 (fine-tuned), Rescorla-Wagner 0.468, fine-tuned LLM 0.381.
 
 [ ] 7.3 Rerun the analysis notebooks and regenerate the figures.
 
