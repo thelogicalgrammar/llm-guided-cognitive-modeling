@@ -1,0 +1,355 @@
+RUNNING THIS PROJECT ON SNELLIUS
+================================
+
+Checklist with the commands for each step. Written for the `fitting-budget` branch
+(vectorised evaluator, JAX fitting, fixed data loader).
+
+Everything large lives in the project space prjs2269; home (200 GiB) holds only the repo
+and the venv; scratch is used for temporary files only.
+
+Paths and account used throughout. Step 1.0 puts them in env.sh, so every later step
+starts with `source env.sh` (or the `cogmod` alias) rather than manual exports:
+
+    PROJECT=/gpfs/work1/0/prjs2269      project space: models, data, results
+    ACCOUNT=gusr58621                   SLURM account holding the budget
+    SCRATCH=/scratch-shared/$USER       temporary files only
+    REPO=$HOME/llm-guided-cognitive-modeling
+    MODELS=$PROJECT/Models
+    HF_HOME=$PROJECT/hf                 model downloads, kept out of home
+    COGMOD_DATA_PATH=$PROJECT/Data      read by OpenEvolve/evaluator.py
+
+Every sbatch in this file assumes the account is set, either on the command line
+(sbatch --account=$ACCOUNT ...) or once in each job script:
+
+    sed -i "/#SBATCH --job-name/a #SBATCH --account=$ACCOUNT" OpenEvolve/run_OpEvProg6Job.sh LLMFineTuning/run_MergeLoRAjob.sh
+    grep -n "account" OpenEvolve/run_OpEvProg6Job.sh
+
+Storage notes:
+    - Project space is NOT deleted automatically, but SURF does NOT back it up. Push
+      results you care about to GitHub or Hugging Face as well.
+    - /scratch-shared deletes files older than 14 days without warning, so keep only
+      caches and temporary files there.
+    - Check usage with:  export MYQUOTA_PROJECTSPACES=$PROJECT ; myquota
+
+Anything marked [?] is worth checking on your system; every other command was tested
+against the files in this repo (on a laptop, not on Snellius itself).
+
+
+1. ACCESS AND ENVIRONMENT
+-------------------------
+
+[ ] 1.0 Put the project settings in env.sh, so no variables have to be typed by hand.
+        Keep them project-local: OMP_NUM_THREADS=1 and HF_HOME would be wrong defaults
+        for your other work.
+
+        Paste the next block as-is; the closing EOF must stay at the start of its line.
+
+cat > $HOME/llm-guided-cognitive-modeling/env.sh <<'EOF'
+# source this to work on llm-guided-cognitive-modeling:  source env.sh
+export PROJECT=/gpfs/work1/0/prjs2269
+export ACCOUNT=gusr58621
+export SCRATCH=/scratch-shared/$USER
+export REPO=$HOME/llm-guided-cognitive-modeling
+export MODELS=$PROJECT/Models
+export COGMOD_DATA_PATH=$PROJECT/Data
+export HF_HOME=$PROJECT/hf
+export TMPDIR=$SCRATCH/tmp
+export MYQUOTA_PROJECTSPACES=$PROJECT
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+module load 2025 Python/3.13.1-GCCcore-14.2.0 NVHPC/25.3-CUDA-12.8.0
+source $REPO/FT/bin/activate
+EOF
+
+        Then add a shortcut to ~/.bashrc:
+
+        echo "alias cogmod='cd \$HOME/llm-guided-cognitive-modeling && source env.sh'" >> ~/.bashrc
+
+        From now on, start every session with:
+
+        cogmod                                  # or: cd $REPO && source env.sh
+        mkdir -p $MODELS $HF_HOME $TMPDIR $PROJECT/{Data,logs,Results}
+        echo "$PROJECT | $ACCOUNT | $COGMOD_DATA_PATH"
+
+        Notes:
+          - env.sh activates FT/, so create the venv (step 1.4) before sourcing it, or
+            comment that line out until it exists.
+          - Batch jobs inherit these variables when you submit from a shell that sourced
+            env.sh (--export=ALL). To make the job scripts self-contained instead, add
+            `source $REPO/env.sh` to them after the #SBATCH block.
+          - PIP_CACHE_DIR is genuinely global; if you want pip's cache off home for good,
+            put `export PIP_CACHE_DIR=/scratch-shared/$USER/pipcache` in ~/.bashrc.
+
+[ ] 1.1 Check your allocation has SBUs (a full search run is roughly 1,000-4,000 SBU,
+        the pilot in step 5 about 750).
+
+        accinfo                      # [?] SURF's budget tool; name varies by system
+
+[ ] 1.2 Keep home under its 200 GiB quota: caches must not live there.
+
+        export HF_HOME=$PROJECT/hf PIP_CACHE_DIR=$SCRATCH/pipcache TMPDIR=$SCRATCH/tmp
+
+        One-off, depending on where the Hugging Face cache currently is:
+        # still in home:
+        mv $HOME/.cache/huggingface $PROJECT/hf && ln -s $PROJECT/hf $HOME/.cache/huggingface
+        # already moved to scratch (it would be deleted there after 14 days):
+        rm -f $HOME/.cache/huggingface && mv $SCRATCH/hf $PROJECT/hf && ln -s $PROJECT/hf $HOME/.cache/huggingface
+
+        PIP_CACHE_DIR=$HOME/.cache/pip pip cache purge     # purges the cache in home, not the new one
+        myquota
+
+[ ] 1.3 Clone the branch.
+
+        cd $HOME
+        git clone -b fitting-budget https://github.com/thelogicalgrammar/llm-guided-cognitive-modeling
+        cd $REPO
+
+[ ] 1.4 Load modules and create the venv the job scripts expect (they do `source FT/bin/activate`,
+        so create it in the directory you submit jobs from).
+
+        module load 2025 Python/3.13.1-GCCcore-14.2.0 NVHPC/25.3-CUDA-12.8.0
+        python -m venv FT
+        source FT/bin/activate
+        pip install --upgrade pip
+
+[ ] 1.5 Install the packages for the search (steps 4-6).
+        NOTE: jax is required. Without it the evaluator silently falls back to Powell
+        fitting, which is ~20x slower per program.
+
+        pip install openevolve vllm "jax[cpu]" scipy pandas numpy datasets huggingface_hub
+
+        Only needed if you also redo fine-tuning / LLM inference (stages 2-3 of the README):
+
+        pip install torch transformers peft trl accelerate liger-kernel
+
+[ ] 1.6 Hugging Face access. Psych-101 is open; Psych-101-test is gated with automatic
+        approval (CC-BY-ND-4.0), so accepting the terms grants access immediately.
+
+        a) Logged in to huggingface.co, open
+             https://huggingface.co/datasets/marcelbinz/Psych-101-test
+           and click "Agree and access repository".
+        b) Create a Read token at https://huggingface.co/settings/tokens
+        c) On the cluster, in the venv:
+
+        huggingface-cli login          # newer versions: hf auth login; or export HF_TOKEN=hf_...
+
+        Check access before running the loader:
+
+        python -c "from datasets import load_dataset; print(load_dataset('marcelbinz/Psych-101-test'))" 
+
+
+2. DATA
+-------
+
+[ ] 2.1 Build the datasets (downloads ~1 GB, writes $REPO/Data/{TB,DB,HSo,HW,CB,HSa,HF,MF}).
+
+        cd $REPO
+        python loadAndSplitData.py
+
+        Expected tail of the output: "DriftingBandit: 4934 rows removed", everything else 0.
+
+[ ] 2.2 Verify the structural data is integer (the models index arrays with human_choice).
+
+        python -c "import numpy as np; a=np.load('Data/TB/struc_Train_exp1.npy'); print(a.dtype, a.shape)"
+        # -> int64 (6200, 8)
+
+[ ] 2.3 Move the data to the project space and remember the path.
+
+        rm -rf $PROJECT/Data && mv $REPO/Data $PROJECT/Data
+        export COGMOD_DATA_PATH=$PROJECT/Data
+
+
+3. MODEL WEIGHTS
+----------------
+
+[ ] 3.1 Base model (~160 GB, an hour or more). Run it under screen so it survives logout;
+        login nodes have internet access, compute nodes may not [?].
+
+        screen -S dl                    # or: tmux new -s dl
+        huggingface-cli download Qwen/Qwen3-Coder-Next \
+            --local-dir $MODELS/Qwen3-Coder-Next --max-workers 8
+        # Ctrl-A then D to detach (tmux: Ctrl-B then D); screen -r dl to come back.
+        # Sessions are per login node: note which one you are on (e.g. int6) and ssh back to it.
+        # Rerunning the same command resumes an interrupted download.
+
+        Check afterwards, then drop the duplicate copy in the HF cache:
+
+        du -sh $MODELS/Qwen3-Coder-Next
+        ls $MODELS/Qwen3-Coder-Next | grep -E "config.json|tokenizer|chat_template|safetensors" | head
+        rm -rf $HF_HOME/hub/models--Qwen--Qwen3-Coder-Next
+
+[ ] 3.2 Fine-tuned model: download the LoRA and merge it (CPU and RAM heavy, run as its own job).
+
+        huggingface-cli download CasparFermin/Qwen3-Coder-Next-LoRA --local-dir $PROJECT/FineTune/checkpoint-40
+
+        mergeLoRA.py has three placeholder paths on lines 14-16 (base model in, LoRA in,
+        merged model out). Replace them:
+
+        sed -i "s|/path/to/your/Models/Qwen3-Coder-Next\"|$MODELS/Qwen3-Coder-Next\"|; \
+                s|/path/to/your/Data/FineTune/checkpoint-40/|$PROJECT/FineTune/checkpoint-40/|; \
+                s|/path/to/your/Models/Qwen3-Coder-Next-Merged|$MODELS/Qwen3-Coder-Next-Merged|" LLMFineTuning/mergeLoRA.py
+        sed -n '14,16p' LLMFineTuning/mergeLoRA.py
+
+        The job script writes logs to result/ and error/, and activates FT/ from the
+        submit directory:
+
+        mkdir -p result error
+        sbatch --account=$ACCOUNT LLMFineTuning/run_MergeLoRAjob.sh    # genoa, exclusive node, up to 3h
+
+        Needs ~160 GB of scratch for the merged copy. Skip all of 3.2/3.3 if you are only
+        doing the base-model run.
+
+[ ] 3.3 Check the merged folder has what vllm needs (tokenizer + chat template).
+
+        ls $MODELS/Qwen3-Coder-Next-Merged | grep -E "tokenizer|chat_template|safetensors" | head
+
+        Do the BASE model run first (step 5-6); it needs no merge.
+
+
+4. CONFIG AND JOB SCRIPT
+------------------------
+
+[ ] 4.1 OpenEvolve/config.yaml: point the model name at your directory.
+        Leave template_dir, max_tasks_per_child and parallel_evaluations as they are.
+
+        sed -i "s|Path/to/your/Models/Qwen3-Coder-Next-Merged|$MODELS/Qwen3-Coder-Next|" OpenEvolve/config.yaml
+        grep -nE "name:|api_base|parallel_evaluations|max_tasks_per_child|template_dir" OpenEvolve/config.yaml
+
+[ ] 4.2 OpenEvolve/run_OpEvProg6Job.sh: fix the paths (the script ships with placeholders).
+
+        mkdir -p $PROJECT/logs $PROJECT/Results
+        sed -i "s|/path/to/your/Models/Qwen3-Coder-Next-Merged|$MODELS/Qwen3-Coder-Next|" OpenEvolve/run_OpEvProg6Job.sh
+        sed -i "s|/path/to/your/Logs|$PROJECT/logs|" OpenEvolve/run_OpEvProg6Job.sh
+        sed -i "s|/path/to/your/Results/OpenEvolve/|$PROJECT/Results/OpenEvolve/|" OpenEvolve/run_OpEvProg6Job.sh
+
+        Add the data path next to the other exports (line with OPENAI_API_KEY):
+
+        sed -i "/export OPENAI_API_KEY/a export COGMOD_DATA_PATH=$PROJECT/Data\nexport HF_HOME=$PROJECT/hf" OpenEvolve/run_OpEvProg6Job.sh
+        grep -nE "MODEL_DIR=|LOG_FILE=|COGMOD_DATA_PATH|HF_HOME|--output" OpenEvolve/run_OpEvProg6Job.sh
+
+        Keep the existing OMP_NUM_THREADS=1 / MKL / OPENBLAS / NUMEXPR exports: they matter
+        for the NumPy parts of the fitting.
+
+[ ] 4.3 Raise the wall time (`#SBATCH --time`) well above 3:35, e.g. 24:00:00, and lower the
+        vLLM context if you like (prompts are ~6-10k tokens):
+
+          --max-model-len 32768 \
+
+[ ] 4.4 Quick local check that the evaluator can read the data and fit a program, before
+        burning GPU time (takes ~1 minute on a login node):
+
+        cd $REPO && COGMOD_DATA_PATH=$PROJECT/Data python -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('e','OpenEvolve/evaluator.py')
+e = importlib.util.module_from_spec(spec); spec.loader.exec_module(e)
+r = e.evaluate_stage2('OpenEvolve/initial_program.py')
+print(r.metrics)"
+        # expect combined_score 0.45, nll 0.8318, jax_fit 1.0
+
+
+5. PILOT RUN (1-2 h, ~750 SBU) - DO NOT SKIP
+--------------------------------------------
+
+[ ] 5.1 Copy the job script, set a short time limit and few iterations.
+
+        cp OpenEvolve/run_OpEvProg6Job.sh OpenEvolve/run_pilot.sh
+        sed -i "s|--time=3:35:00|--time=2:00:00|" OpenEvolve/run_pilot.sh
+        sed -i "s|openevolve-run \(.*\)--config|openevolve-run \1--iterations 200 --config|" OpenEvolve/run_pilot.sh
+        sbatch --account=$ACCOUNT OpenEvolve/run_pilot.sh
+        squeue -u $USER
+
+[ ] 5.2 While it runs, watch the vLLM server: if nothing is waiting, raise parallel_evaluations
+        in config.yaml (60 now) for the full runs.
+
+        curl -s localhost:11434/metrics | grep -E "num_requests_running|num_requests_waiting|gpu_cache_usage"
+
+[ ] 5.3 After it finishes, check the log (results_OpenEvolve_<jobid>.log):
+
+        L=results_OpenEvolve_<jobid>.log
+        grep -c "os.fork() was called" $L            # must be 0 (workers must spawn, not fork)
+        grep -o "jax_fit=[0-9.]*" $L | sort | uniq -c # how often gradient fitting worked; 1.0 is best
+        grep -c "No valid diffs found" $L            # wasted LLM requests
+        grep -o "completed in [0-9.]*s" $L | awk '{s+=$3; n++} END {print "mean iteration", s/n, "s"}'
+        grep "New best" $L | tail -3                 # score should pass 0.450, ideally 0.636 (Rescorla-Wagner)
+
+        If jax_fit is mostly 0: the LLM writes code JAX cannot trace (in-place assignment,
+        Python if on arrays). Tighten the "Gradient fitting (JAX)" rules in config.yaml.
+
+
+6. FULL RUNS
+------------
+
+[ ] 6.1 Base model.
+
+        sbatch --account=$ACCOUNT OpenEvolve/run_OpEvProg6Job.sh
+
+[ ] 6.2 Resume after a wall-time stop (checkpoints are written every 30 iterations).
+
+        ls $PROJECT/Results/OpenEvolve/checkpoints/
+        # add to the openevolve-run line in the job script:
+        #   --checkpoint $PROJECT/Results/OpenEvolve/checkpoints/checkpoint_<N>
+        sbatch --account=$ACCOUNT OpenEvolve/run_OpEvProg6Job.sh
+
+[ ] 6.3 Fine-tuned model: same settings, only MODEL_DIR and --output change.
+
+        sed -i 's|Qwen3-Coder-Next"|Qwen3-Coder-Next-Merged"|; s|Results/OpenEvolve/|Results/OpenEvolveMerged/|' OpenEvolve/run_OpEvProg6Job.sh
+        sed -i "s|$MODELS/Qwen3-Coder-Next\"|$MODELS/Qwen3-Coder-Next-Merged\"|" OpenEvolve/config.yaml
+        grep -nE "MODEL_DIR=|--output" OpenEvolve/run_OpEvProg6Job.sh
+        grep -n "name:" OpenEvolve/config.yaml
+        sbatch --account=$ACCOUNT OpenEvolve/run_OpEvProg6Job.sh
+
+[ ] 6.4 Back up the results after each run: project space is not deleted automatically,
+        but it is not backed up either.
+
+        mkdir -p $HOME/results_backup
+        cp -r $PROJECT/Results/OpenEvolve/checkpoints/checkpoint_<N> $HOME/results_backup/
+        cp results_OpenEvolve_*.log $HOME/results_backup/
+        # and/or push to Hugging Face, as the published runs did:
+        huggingface-cli upload <your-user>/<your-results-dataset> $HOME/results_backup --repo-type=dataset
+
+        A checkpoint directory holds the best program, every program's code and metrics,
+        so it is what the analysis needs. The logs give iteration times, jax_fit and
+        invalid-edit rates.
+
+
+7. AFTER THE SEARCH
+-------------------
+
+[ ] 7.1 EvolvedModelInference/evaluator.py still uses the OLD per-trial interface and cannot
+        score programs from these runs. Port it the same way OpenEvolve/evaluator.py was ported
+        (load_blocks + evalModel), or it will fail on every new program.
+
+[ ] 7.2 Refit Rescorla-Wagner with the same budget and optimiser as the evolved models, so the
+        comparison is fair. Under the old 20-evaluation budget RW scores 0.476; fitted properly
+        it scores 0.636 and beats both published evolved models.
+
+[ ] 7.3 Rerun the analysis notebooks and regenerate the figures.
+
+
+8. WORTH REPORTING IN THE PAPER
+-------------------------------
+
+[ ] The fitting budget and optimiser for every model, including the baseline.
+[ ] jax_fit and the invalid-edit rate as search-efficiency measures.
+[ ] That models can no longer branch on game numbers (the old interface let them, and every
+    published best program did), so results are not directly comparable with the old runs.
+
+
+TROUBLESHOOTING
+---------------
+
+"os.fork() was called ... JAX is multithreaded"
+    max_tasks_per_child is missing from config.yaml; it makes OpenEvolve spawn workers.
+
+Every program scores 0.0 with "Feature dimension 'model_complexity' not found"
+    You are running the old evaluator; this branch reports model_complexity for failures too.
+
+Fitting takes minutes per program and jax_fit is 0.0
+    jax is not installed in the venv, or the program cannot be traced. Check the "fitting"
+    note in the program artifacts for the reason.
+
+vllm never becomes ready
+    Check $LOG_FILE; usually the model path or the chat template is wrong.
+
+DatasetNotFoundError: gated dataset
+    Step 1.5: accept the terms for Psych-101-test with the account whose token you use, and
+    log in on the cluster. Only the text export needs this; the structural data does not.
