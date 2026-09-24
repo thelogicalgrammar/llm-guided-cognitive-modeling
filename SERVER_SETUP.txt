@@ -264,8 +264,21 @@ print(r.metrics)"
         # expect combined_score 0.45, nll 0.8318, jax_fit 1.0
 
 
-5. PILOT RUN (1-2 h, ~750 SBU) - DO NOT SKIP
---------------------------------------------
+5. GPU SMOKE TEST AND PILOT RUN - DO NOT SKIP
+---------------------------------------------
+
+[ ] 5.0 Before the pilot, check the GPUs, vLLM and the evaluator in one short job
+        (~40 min on 2 H100s, ~250 SBU). It prints GPU info, fits the initial program,
+        serves the model and sends one request.
+
+        mkdir -p result error $PROJECT/logs
+        sbatch --account=$ACCOUNT OpenEvolve/run_GPUTestJob.sh
+        tail -f result/gputest_<jobid>.log
+
+        Expect: 2 H100s listed, torch reporting 2 GPUs, metrics 0.45 / 0.8318 / jax_fit 1.0,
+        "server ready after ...s", and a response containing GPU OK.
+        To test the merged model instead:  TEST_MODEL_DIR=$MODELS/Qwen3-Coder-Next-Merged sbatch ...
+
 
 [ ] 5.1 Copy the job script, set a short time limit and few iterations.
 
