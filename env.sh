@@ -13,6 +13,12 @@ export MODELS=$PROJECT/Models                  # Qwen3-Coder-Next and the merged
 export COGMOD_DATA_PATH=$PROJECT/Data          # read by OpenEvolve/evaluator.py
 export HF_HOME=$PROJECT/hf                     # Hugging Face downloads, kept off the home quota
 export TMPDIR=$SCRATCH/tmp
+export COGMOD_RESULTS_PATH=$PROJECT/Results/EvolvedCogModels   # test-set results of fitted programs
+
+# inputs and output of LLMFineTuning/mergeLoRA.py
+export COGMOD_BASE_MODEL=$MODELS/Qwen3-Coder-Next
+export COGMOD_LORA=$PROJECT/FineTune/checkpoint-40/FineTuneResults/checkpoint-40
+export COGMOD_MERGED_MODEL=$MODELS/Qwen3-Coder-Next-Merged
 export MYQUOTA_PROJECTSPACES=$PROJECT          # so `myquota` reports the project space
 
 # one thread per process: OpenEvolve runs many evaluations in parallel

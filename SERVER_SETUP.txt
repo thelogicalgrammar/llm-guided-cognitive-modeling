@@ -58,6 +58,10 @@ export COGMOD_DATA_PATH=$PROJECT/Data
 export HF_HOME=$PROJECT/hf
 export TMPDIR=$SCRATCH/tmp
 export MYQUOTA_PROJECTSPACES=$PROJECT
+export COGMOD_RESULTS_PATH=$PROJECT/Results/EvolvedCogModels
+export COGMOD_BASE_MODEL=$MODELS/Qwen3-Coder-Next
+export COGMOD_LORA=$PROJECT/FineTune/checkpoint-40/FineTuneResults/checkpoint-40
+export COGMOD_MERGED_MODEL=$MODELS/Qwen3-Coder-Next-Merged
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 module load 2025 Python/3.13.1-GCCcore-14.2.0 NVHPC/25.3-CUDA-12.8.0
 source $REPO/FT/bin/activate
@@ -193,12 +197,10 @@ EOF
 
         huggingface-cli download CasparFermin/Qwen3-Coder-Next-LoRA --local-dir $PROJECT/FineTune/checkpoint-40
 
-        mergeLoRA.py takes its three paths from the environment (or from lines 15-17 if
-        you prefer to edit them). Note that the LoRA repository nests its checkpoints:
+        mergeLoRA.py takes its three paths from the environment, and env.sh sets them.
+        Note that the LoRA repository nests its checkpoints, hence the FineTuneResults level:
 
-        export COGMOD_BASE_MODEL=$MODELS/Qwen3-Coder-Next
-        export COGMOD_LORA=$PROJECT/FineTune/checkpoint-40/FineTuneResults/checkpoint-40
-        export COGMOD_MERGED_MODEL=$MODELS/Qwen3-Coder-Next-Merged
+        echo "$COGMOD_BASE_MODEL | $COGMOD_LORA | $COGMOD_MERGED_MODEL"
         ls $COGMOD_LORA/adapter_config.json          # the script checks this before loading anything
 
         Checkpoints 10-63 are available; 40 is the one the paper used, though validation
