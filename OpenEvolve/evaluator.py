@@ -145,6 +145,22 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
             # create a single error message
             error_summary = f"[Exp {result['Experiment']}] {result['error_type']}: {result['error_message']} @ {result['error_location']}"
 
+            # advice for the specific failure, which reaches the LLM with the program that caused it
+            message = str(result['error_message'])
+            specific = ""
+            if "broadcast" in message:
+                specific = ("Shapes: a per-game quantity has shape (n_games,) and must be written q[:, None] before it is "
+                            "combined with an array of shape (n_games, num_options). Build per-option values with "
+                            "np.stack([...], axis=1). predict must return (n_games, num_options).")
+            elif "invalid index to scalar" in message or "too many indices" in message:
+                specific = ("Indexing: every input is an array with one entry per game, not a number. Read the chosen "
+                            "option with values[np.arange(n_games), choice] or np.sum(values * np.eye(num_options)[choice], axis=1).")
+            elif "does not declare" in message or "Mismatch between parameter keys" in message:
+                specific = ("Parameters: define_parameters_and_bounds, get_init_param and the params_dict that set_params "
+                            "reads must use exactly the same keys. Adding a parameter means adding it in all three.")
+            elif "has no attribute" in message:
+                specific = "State: create every array the model uses in reset(), before predict or update refer to it."
+
             error_artifacts = {
                 'errors:': error_summary,
                 "suggestion": ("Ensure all required methods of the class Model exist, namely: __init__, set_params, reset, predict, update."
@@ -153,6 +169,8 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
                                "Also ensure math is handled correctly, and that bounds and initial guesses are properly set for the trainable parameters."
                                )
             }
+            if specific:
+                error_artifacts["how to fix this error"] = specific
             
             return EvaluationResult(
                 metrics={
