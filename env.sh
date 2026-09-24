@@ -4,7 +4,7 @@
 # Project-local on purpose: OMP_NUM_THREADS=1 and HF_HOME would be wrong
 # defaults for other work, so these are not set in ~/.bashrc.
 
-export PROJECT=/gpfs/work1/0/prjs2269          # project space: models, data, results
+export PROJECT=/gpfs/work5/0/prjs2269          # project space: models, data, results
 export ACCOUNT=gusr58621                       # SLURM account holding the budget
 export SCRATCH=/scratch-shared/$USER           # temporary files only, cleaned after 14 days
 export REPO=$HOME/llm-guided-cognitive-modeling

@@ -10,7 +10,7 @@ and the venv; scratch is used for temporary files only.
 Paths and account used throughout. Step 1.0 puts them in env.sh, so every later step
 starts with `source env.sh` (or the `cogmod` alias) rather than manual exports:
 
-    PROJECT=/gpfs/work1/0/prjs2269      project space: models, data, results
+    PROJECT=/gpfs/work5/0/prjs2269      project space: models, data, results
     ACCOUNT=gusr58621                   SLURM account holding the budget
     SCRATCH=/scratch-shared/$USER       temporary files only
     REPO=$HOME/llm-guided-cognitive-modeling
@@ -49,7 +49,7 @@ against the files in this repo (on a laptop, not on Snellius itself).
 
 cat > $HOME/llm-guided-cognitive-modeling/env.sh <<'EOF'
 # source this to work on llm-guided-cognitive-modeling:  source env.sh
-export PROJECT=/gpfs/work1/0/prjs2269
+export PROJECT=/gpfs/work5/0/prjs2269
 export ACCOUNT=gusr58621
 export SCRATCH=/scratch-shared/$USER
 export REPO=$HOME/llm-guided-cognitive-modeling
