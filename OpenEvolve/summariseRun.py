@@ -12,9 +12,9 @@ import sys
 import collections
 from pathlib import Path
 
-# Rescorla-Wagner scored with this evaluator on the five included experiments:
-# 0.635 when candidates are scored on validation participants (the default), 0.637 on training ones
-RESCORLA_WAGNER = 0.635
+# Rescorla-Wagner scored with this evaluator on the five included experiments: 0.633 with the
+# defaults (validation participants, BIC penalty), 0.635 without the penalty, 0.637 on training data
+RESCORLA_WAGNER = 0.633
 
 
 def latest_checkpoint(output_dir):

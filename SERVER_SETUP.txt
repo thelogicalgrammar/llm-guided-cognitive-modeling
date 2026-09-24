@@ -387,8 +387,9 @@ print(r.metrics)"
 -------------------------------
 
 [ ] The fitting budget and optimiser for every model, including the baseline.
-[ ] That candidates are scored on held-out validation participants, not on the participants
-    their parameters were fitted to (COGMOD_SCORE_SPLIT=Train restores the published behaviour).
+[ ] That candidates are scored on held-out validation participants with a BIC penalty of
+    log(N)/(2N) per parameter (COGMOD_SCORE_SPLIT=Train and COGMOD_BIC_PENALTY=0 restore the
+    published behaviour), and that hardcoded constants are counted and reported.
     The first full run showed why: its best program by training score reached 0.6293 there but
     0.5095 mean test nll, worse than Rescorla-Wagner's 0.4685, with a 0.19 train-test gap on
     Maggie's Farm.

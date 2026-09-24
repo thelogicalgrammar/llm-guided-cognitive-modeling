@@ -78,17 +78,26 @@ prompt:
 
     Priority order:
     1. Improve combined_score, which is measured on participants the parameter fitting never saw,
-       so a model that only fits the training participants scores badly.
+       so a model that only fits the training participants scores badly. The score includes a BIC
+       penalty of log(N)/(2N) per trainable parameter, so a parameter has to earn its place.
     2. Improve generalization across experiments.
     3. Maintain cognitive plausibility.
     4. Reduce unnecessary parameters and complexity.
     5. Improve computational efficiency.
 
+    Hardcoded constants:
+    Numeric literals inside the Model class (0.18, 0.28, 0.012, ...) fit the data exactly like
+    parameters, but escape the BIC penalty and cannot be interpreted or reported. Do not introduce
+    them. When you see them in the current program, either make the ones that matter trainable
+    parameters, or remove them; a model with three trainable parameters and no magic numbers is
+    worth more than one with thirty tuned constants and the same score.
+
     Notes:
     - Keep code as dynamic as possible. Avoid hard-coded experiment-specific behavior whenever possible.
     - Avoid numerical instability such as extremely large or small logits.
     - Parameters are fitted per experiment from several starting points (your initial values and random points within the bounds); keep bounds finite and sensible.
-    - Make quantities that should be tuned trainable parameters instead of hardcoded constants.
+    - Make quantities that should be tuned trainable parameters instead of hardcoded constants, and
+      remove hardcoded constants you find in the current program.
     - Use forced, horizon, trial, hazard_rate and num_options to adapt to the structure of each task.
 
     Participant instructions contained the follow characteristics:    
