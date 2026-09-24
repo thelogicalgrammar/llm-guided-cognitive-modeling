@@ -324,9 +324,11 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
         effective_parameters = result.attrs.get('effective_parameters', parameter_count)
         result.drop(columns=['model_complexity'], inplace=True)
         
-        # Add artifacts for successful stage 1
+        # Per-experiment feedback deliberately excludes the validation numbers the score is based
+        # on: reporting them back would let the search tune against the participants it is scored on.
+        reported = result[['Experiment', 'train_nll', 'bic_penalty', 'parameters']]
         evaluation_artifacts = {
-            "Experiment History\n": result.to_dict(orient='records')
+            "Experiment History (nll on the participants used for fitting)\n": reported.to_dict(orient='records')
         }
         if hardcoded_constants >= 10:
             evaluation_artifacts["hardcoded constants"] = (
