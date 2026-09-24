@@ -7,11 +7,10 @@
 #SBATCH --output=result/merge_output_%j.log
 #SBATCH --error=error/%x_%j.txt
 
-# load module
-module load 2025 Python/3.13.1-GCCcore-14.2.0 NVHPC/25.3-CUDA-12.8.0
 
 # load environment
-source FT/bin/activate
+cd "${SLURM_SUBMIT_DIR:-$PWD}" || exit 1
+source env.sh || { echo "env.sh not found: submit this job from the repository root"; exit 1; }
 
 # run python file
 python LLMFineTuning/mergeLoRA.py

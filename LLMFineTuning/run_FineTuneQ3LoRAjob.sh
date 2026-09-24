@@ -6,11 +6,10 @@
 #SBATCH --output=results/%x_%j.log  # log file
 #SBATCH --error=error/%x_%j.txt     # error file
 
-# load module
-module load 2025 Python/3.13.1-GCCcore-14.2.0 NVHPC/25.3-CUDA-12.8.0
 
 # load environemtn
-source FT/bin/activate
+cd "${SLURM_SUBMIT_DIR:-$PWD}" || exit 1
+source env.sh || { echo "env.sh not found: submit this job from the repository root"; exit 1; }
 
 export HF_ENABLE_PARALLEL_LOADING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

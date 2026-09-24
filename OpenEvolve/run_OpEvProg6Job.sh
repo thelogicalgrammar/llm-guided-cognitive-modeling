@@ -10,9 +10,9 @@
 #SBATCH --export=ALL
 
 # load necessary modules
-module load 2025 Python/3.13.1-GCCcore-14.2.0 NVHPC/25.3-CUDA-12.8.0
 
-source FT/bin/activate
+cd "${SLURM_SUBMIT_DIR:-$PWD}" || exit 1
+source env.sh || { echo "env.sh not found: submit this job from the repository root"; exit 1; }
 
 # mandatory fake API key
 export OPENAI_API_KEY="sk-no-key"
