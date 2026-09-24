@@ -282,6 +282,12 @@ print(r.metrics)"
 
         Expect: 2 H100s listed, torch reporting 2 GPUs, metrics 0.45 / 0.8318 / jax_fit 1.0,
         "server ready after ...s", and a response containing GPU OK.
+
+        Measured on 2026-09-24: H100s with 94 GB each, driver 595.91.07, evaluator 1.2 s,
+        vLLM ready after 1170 s (~20 min). That startup is paid by every job, ~125 SBU, so
+        prefer fewer long runs over many short ones. Since 94 GB holds an fp8 copy of the
+        model (~80 GB), --tensor-parallel-size 1 on a single GPU may work and would halve
+        the GPU cost; worth testing with --gres=gpu:1 before a long campaign.
         To test the merged model instead:  TEST_MODEL_DIR=$MODELS/Qwen3-Coder-Next-Merged sbatch ...
 
 
