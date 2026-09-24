@@ -161,11 +161,10 @@ def run_model(program_path, max_eval, n_starts=1, method="powell"):
             else:
                 score_nll = train_nll
 
-            # BIC per trial: each parameter costs log(N) / (2N) of nll, with N the number of
-            # trials the parameters were fitted on
-            if BIC_PENALTY:
-                n_trials = TRAIN_BLOCKS[i]['n_free']
-                score_nll = score_nll + effective_parameters * np.log(n_trials) / (2 * n_trials)
+            # BIC per trial: each effective parameter costs log(N) / (2N), with N the number of
+            # trials the parameters were fitted on. Kept separate, so the reported nll stays bare.
+            n_trials = TRAIN_BLOCKS[i]['n_free']
+            penalty = effective_parameters * np.log(n_trials) / (2 * n_trials) if BIC_PENALTY else 0.0
 
         # catch all errors (and warnings raised as errors)
         except (FloatingPointError, OptimizeWarning, Exception) as e:
@@ -182,8 +181,9 @@ def run_model(program_path, max_eval, n_starts=1, method="powell"):
             return {'Experiment': i+1, 'error_type': error_type, 'error_message': str(error_message), 'error_location':error_location}
 
         # store all the data in a list of dictionaries
-        results.append({"Experiment": i+1, "combined_score": np.exp(-score_nll), "nll": score_nll,
-                        "train_nll": train_nll, "model_complexity": model_complexity, "parameters": fit['params']})
+        results.append({"Experiment": i+1, "combined_score": np.exp(-(score_nll + penalty)), "nll": score_nll,
+                        "train_nll": train_nll, "bic_penalty": penalty,
+                        "model_complexity": model_complexity, "parameters": fit['params']})
 
     # clear compiled JAX functions, as every program compiles new ones
     clear_jax_caches()
@@ -253,7 +253,7 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
 
         # Handle different result formats
         if isinstance(result, pd.DataFrame):
-            if result.shape[1] == 6:
+            if result.shape[1] == 7:
                 pass
             else:
                 error_artifacts = {
@@ -317,7 +317,7 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
             )
         
         # compute mean combined score
-        best_stats = result[['combined_score', 'nll', 'train_nll', 'model_complexity']].mean().to_dict()
+        best_stats = result[['combined_score', 'nll', 'train_nll', 'bic_penalty', 'model_complexity']].mean().to_dict()
         jax_fit, jax_failure = result.attrs.get('jax_fit', 0.0), result.attrs.get('jax_failure')
         hardcoded_constants = result.attrs.get('hardcoded_constants', 0.0)
         parameter_count = result.attrs.get('parameter_count', 0.0)
@@ -343,9 +343,10 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
             metrics={
                 "runs_successfully": 1.0,
                 "combined_score": best_stats['combined_score'],
-                "nll": best_stats['nll'],
+                "nll": best_stats['nll'],                      # validation nll, without the penalty
                 "train_nll": best_stats['train_nll'],
                 "generalisation_gap": best_stats['nll'] - best_stats['train_nll'],
+                "bic_penalty": best_stats['bic_penalty'],
                 "model_complexity": best_stats['model_complexity'],
                 "parameters": parameter_count,
                 "hardcoded_constants": hardcoded_constants,
