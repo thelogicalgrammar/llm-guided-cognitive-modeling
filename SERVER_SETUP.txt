@@ -146,22 +146,28 @@ EOF
 2. DATA
 -------
 
-[ ] 2.1 Build the datasets (downloads ~1 GB, writes $REPO/Data/{TB,DB,HSo,HW,CB,HSa,HF,MF}).
+[ ] 2.1 Write the data straight into the project space: the loader always writes to
+        $REPO/Data, so point that at the project space first.
 
         cd $REPO
+        mkdir -p $PROJECT/Data
+        ln -sfn $PROJECT/Data $REPO/Data
+        ls -ld $REPO/Data                      # should show the symlink
+
+[ ] 2.2 Build the datasets (downloads ~1 GB into $HF_HOME; needs the Psych-101-test
+        access from step 1.6 for the text files).
+
         python loadAndSplitData.py
 
         Expected tail of the output: "DriftingBandit: 4934 rows removed", everything else 0.
+        Result: $PROJECT/Data/{TB,DB,HSo,HW,CB,HSa,HF,MF}, each with struc_*.npy and *_text_*.csv.
 
-[ ] 2.2 Verify the structural data is integer (the models index arrays with human_choice).
+[ ] 2.3 Check the structural data is integer (the models index arrays with human_choice)
+        and that the evaluator's path points at it.
 
-        python -c "import numpy as np; a=np.load('Data/TB/struc_Train_exp1.npy'); print(a.dtype, a.shape)"
+        python -c "import numpy as np; a=np.load('$PROJECT/Data/TB/struc_Train_exp1.npy'); print(a.dtype, a.shape)"
         # -> int64 (6200, 8)
-
-[ ] 2.3 Move the data to the project space and remember the path.
-
-        rm -rf $PROJECT/Data && mv $REPO/Data $PROJECT/Data
-        export COGMOD_DATA_PATH=$PROJECT/Data
+        echo $COGMOD_DATA_PATH                 # set by env.sh, must be $PROJECT/Data
 
 
 3. MODEL WEIGHTS
