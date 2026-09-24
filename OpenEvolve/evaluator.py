@@ -32,9 +32,10 @@ TRAIN_BLOCKS = [load_blocks(np.load(os.path.join(data_path, exp['name'], f"struc
 # COGMOD_SCORE_SPLIT=Train to score on the training participants instead, as the published runs did.
 SCORE_SPLIT = os.environ.get("COGMOD_SCORE_SPLIT", "Val")
 
-# BIC penalty per trial, k * log(N) / (2N), added to the nll of each experiment, so that a
-# parameter has to earn its place. Set COGMOD_BIC_PENALTY=0 to score without it.
-BIC_PENALTY = os.environ.get("COGMOD_BIC_PENALTY", "1") == "1"
+# Selection is by likelihood on held-out participants, which already prices extra parameters
+# through the generalisation gap, so no penalty is applied by default. COGMOD_BIC_PENALTY=1 adds
+# a per-trial BIC of log(N)/(2N) per effective parameter, for a run scored the classical way.
+BIC_PENALTY = os.environ.get("COGMOD_BIC_PENALTY", "0") == "1"
 
 # Hardcoded constants are tuned by the search across iterations, so they fit the data like
 # parameters and count towards k, at this weight. They are counted more cautiously than they are

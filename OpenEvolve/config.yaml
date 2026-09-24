@@ -78,8 +78,8 @@ prompt:
 
     Priority order:
     1. Improve combined_score, which is measured on participants the parameter fitting never saw,
-       so a model that only fits the training participants scores badly. The score includes a BIC
-       penalty of log(N)/(2N) per trainable parameter, so a parameter has to earn its place.
+       so a model that only fits the training participants scores badly: an extra parameter or tuned
+       constant pays for itself only if it predicts behaviour rather than individual participants.
     2. Improve generalization across experiments.
     3. Maintain cognitive plausibility.
     4. Reduce unnecessary parameters and complexity.
@@ -87,8 +87,8 @@ prompt:
 
     Hardcoded constants:
     Numeric literals inside the Model class (0.18, 0.28, 0.012, ...) fit the data exactly like
-    parameters, because they are tuned across iterations, so each non-integer one counts as half a
-    parameter in the BIC penalty. They also cannot be interpreted or reported. Do not introduce them. When you see them in the current program, either make the ones that matter trainable
+    parameters, because they are tuned across iterations, and they cannot be interpreted or reported.
+    Do not introduce them. When you see them in the current program, either make the ones that matter trainable
     parameters, or remove them; a model with three trainable parameters and no magic numbers is
     worth more than one with thirty tuned constants and the same score.
 

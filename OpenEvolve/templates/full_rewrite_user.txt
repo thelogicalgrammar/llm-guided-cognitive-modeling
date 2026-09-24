@@ -3,9 +3,9 @@
 - Feature coordinates: {feature_coords}
 - Focus areas: {improvement_areas}
 
-The fitness above is measured on participants whose data was not used to fit the parameters, and
-includes a BIC penalty for each parameter and each tuned constant. Those numbers are deliberately
-not shown per experiment: a model tuned against them would make them meaningless.
+The fitness above is measured on participants whose data was not used to fit the parameters.
+Those numbers are deliberately not shown per experiment: a model tuned against them would make
+them meaningless.
 
 {artifacts}
 
