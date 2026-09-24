@@ -12,9 +12,9 @@ import sys
 import collections
 from pathlib import Path
 
-# Rescorla-Wagner scored with this evaluator on the five included experiments: 0.635 with the
-# defaults (validation participants, no penalty), 0.633 with the BIC penalty, 0.637 on training data
-RESCORLA_WAGNER = 0.635
+# Rescorla-Wagner with the defaults (validation participants, no penalty), scored as
+# exp(-mean nll) over the five included experiments; the initial program scores 0.435
+RESCORLA_WAGNER = 0.619
 
 
 def latest_checkpoint(output_dir):
@@ -59,7 +59,7 @@ if __name__ == "__main__":
         initial = [p for p in programs if p.get("parent_id") is None]
         if initial:
             print(f"  initial program: {initial[0]['metrics'].get('combined_score', 0):.4f}")
-        print(f"  reference points: {initial[0]['metrics'].get('combined_score', 0.45):.3f} = initial program, "
+        print(f"  reference points: {initial[0]['metrics'].get('combined_score', 0.435):.3f} = initial program, "
               f"{RESCORLA_WAGNER} = fitted Rescorla-Wagner" if initial else f"  Rescorla-Wagner scores {RESCORLA_WAGNER}")
 
         jax = [p["metrics"].get("jax_fit") for p in ok if "jax_fit" in p["metrics"]]

@@ -319,6 +319,11 @@ def evaluate(program_path, max_eval=20, stage=2, n_starts=1, method="powell"):
         
         # compute mean combined score
         best_stats = result[['combined_score', 'nll', 'train_nll', 'bic_penalty', 'model_complexity']].mean().to_dict()
+
+        # exp of the mean nll, not the mean of exp(-nll): the latter weights an improvement on an
+        # easy experiment more than the same improvement on a hard one, and the hard experiments
+        # (DriftingBandit) are where the models differ most
+        best_stats['combined_score'] = float(np.exp(-(best_stats['nll'] + best_stats['bic_penalty'])))
         jax_fit, jax_failure = result.attrs.get('jax_fit', 0.0), result.attrs.get('jax_failure')
         hardcoded_constants = result.attrs.get('hardcoded_constants', 0.0)
         parameter_count = result.attrs.get('parameter_count', 0.0)

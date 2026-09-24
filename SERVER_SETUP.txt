@@ -316,7 +316,7 @@ print(r.metrics)"
         grep -o "jax_fit=[0-9.]*" $L | sort | uniq -c # how often gradient fitting worked; 1.0 is best
         grep -c "No valid diffs found" $L            # wasted LLM requests
         grep -o "completed in [0-9.]*s" $L | awk '{s+=$3; n++} END {print "mean iteration", s/n, "s"}'
-        grep "New best" $L | tail -3                 # score should pass 0.450, ideally 0.636 (Rescorla-Wagner)
+        grep "New best" $L | tail -3                 # score should pass 0.435, ideally 0.619 (Rescorla-Wagner)
 
         If jax_fit is mostly 0: the LLM writes code JAX cannot trace (in-place assignment,
         Python if on arrays). Tighten the "Gradient fitting (JAX)" rules in config.yaml.
