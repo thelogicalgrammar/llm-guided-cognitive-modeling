@@ -12,5 +12,10 @@
 cd "${SLURM_SUBMIT_DIR:-$PWD}" || exit 1
 source env.sh || { echo "env.sh not found: submit this job from the repository root"; exit 1; }
 
+# the LoRA needs peft 0.18.1, which can conflict with the versions vllm wants in FT/;
+# MERGE_VENV=<path> runs the merge in its own environment instead
+[ -n "${MERGE_VENV:-}" ] && { source "$MERGE_VENV/bin/activate" || exit 1; }
+python -c "import peft, transformers; print('peft', peft.__version__, '| transformers', transformers.__version__)"
+
 # run python file
 python LLMFineTuning/mergeLoRA.py
