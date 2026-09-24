@@ -3,6 +3,13 @@
 - Feature coordinates: {feature_coords}
 - Focus areas: {improvement_areas}
 
+## Metrics
+{metrics}
+- nll is measured on participants whose data was not used to fit the parameters, train_nll on the
+  ones that were: a large generalisation_gap means the model is fitting participants, not behaviour.
+- hardcoded_constants are numeric literals in the Model class; non-integer ones count as half a
+  parameter each in effective_parameters, which is what the BIC penalty charges.
+
 {artifacts}
 
 # Program Evolution History
