@@ -45,6 +45,17 @@ def max_difference(base_dir, base_map, merged_dir, merged_map, name):
         return None
     return float(abs(base_values - merged_values).max())
 
+def adapter_weights(lora_dir):
+    """What the adapter file actually contains, grouped into expert and non-expert tensors"""
+    adapter_file = os.path.join(lora_dir, "adapter_model.safetensors") if lora_dir else None
+    if not adapter_file or not os.path.isfile(adapter_file):
+        return None, None, None
+    with safe_open(adapter_file, framework=FRAMEWORK) as f:
+        keys = list(f.keys())
+        shapes = {k: tuple(f.get_slice(k).get_shape()) for k in keys[:400]}
+    expert_keys = [k for k in keys if ".experts" in k]
+    return [k for k in keys if k not in expert_keys], expert_keys, shapes
+
 def targets(lora_dir):
     """The module names and parameter names the adapter claims to change"""
     if not lora_dir or not os.path.isfile(os.path.join(lora_dir, "adapter_config.json")):
@@ -67,7 +78,15 @@ if __name__ == "__main__":
     target_modules, target_parameters = targets(lora_dir)
     print(f"\nadapter targets modules {sorted(target_modules)}\n                 parameters {target_parameters}")
 
-    # find the real tensor names of each target, spread over the model rather than all in layer 0
+    # what the adapter file itself contains: if it has no expert tensors, the fine-tuning
+    # never adapted the experts, whatever the config asked for
+    non_expert_keys, expert_keys, shapes = adapter_weights(lora_dir) if lora_dir else (None, None, None)
+    if non_expert_keys is not None:
+        print(f"\nadapter file: {len(non_expert_keys)} tensors outside the experts, {len(expert_keys)} inside")
+        for key in (expert_keys or non_expert_keys)[:3]:
+            print(f"  e.g. {key}  {shapes.get(key)}")
+
+    # find the real tensor names of each target, spread over layers (and experts) rather than all in layer 0
     def matching(target, expert_only):
         names = [n for n in base_map if f".{target}" in n and n in merged_map
                  and (".experts." in n) == expert_only]
@@ -92,12 +111,22 @@ if __name__ == "__main__":
             else:
                 print(f"  {name}: max abs diff {difference:.6f}   {'changed' if difference > 0 else 'IDENTICAL'}")
                 differences.append(difference)
-        if differences and max(differences) == 0:
-            failures.append(label)
+        # a target counts as merged only if every sampled tensor changed: expert adapters
+        # that are applied at all change every expert
+        if differences and min(differences) == 0:
+            failures.append(f"{label} ({sum(d == 0 for d in differences)} of {len(differences)} sampled tensors identical)")
 
+    missing_targets = [label for label, names in groups if not names]
     print(f"\n{checked} tensors compared")
+    if missing_targets:
+        print("These targets do not exist in this checkpoint, so nothing could be merged for them:")
+        for label in missing_targets:
+            print(f"  - {label}")
+        if expert_keys is not None and not expert_keys:
+            print("  (the adapter file contains no expert tensors either: the fine-tuning never\n"
+                  "   adapted the experts, so this is a property of the LoRA, not of the merge)")
     if failures:
-        print("These targets are identical to the base model, so their adapters were not merged:")
+        print("These targets did not change everywhere they should have:")
         for label in failures:
             print(f"  - {label}")
         print("\nIf the expert parameters are among them, the merged model is only partly\n"
