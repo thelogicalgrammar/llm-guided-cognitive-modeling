@@ -62,6 +62,7 @@ TARGET_COLS = [
 
 exps_with_nans = []
 empty_text = []
+text_mismatch = []
 split_results = {}
 
 # loop over all data
@@ -122,6 +123,17 @@ for _, exp in experiments.iterrows():
     # retain only relevant columns in the exact target order
     clean_struc = clean_struc[TARGET_COLS]
 
+    # Psych-101 stores participant as a string ('0', '1', '10', ...) while the structural parquet
+    # stores int64. Both number participants from 0 within an experiment, so the ids correspond, but
+    # '3'.isin([3]) is False: without this cast every text file is written with a header and no rows.
+    text['participant'] = pd.to_numeric(text['participant'], errors='coerce').astype('int32')
+
+    text_ids = set(text['participant'].unique())
+    struc_ids = set(raw_struc['participant'].unique())
+    if not struc_ids <= text_ids:
+        text_mismatch.append(f"{exp_id}: {len(struc_ids - text_ids)} of {len(struc_ids)} structural "
+                             f"participants have no text (is Psych-101-test readable?)")
+
     # Split allocations based on shuffled independent participants
     participants = clean_struc['participant'].unique()
     np.random.RandomState(42).shuffle(participants)
@@ -172,9 +184,15 @@ if exps_with_nans:
 else:
     print("\n No NaNs found in any experiments.")
 
-# The text files are only used by LLMFineTuning and LLMInference, and they are empty when
-# Psych-101-test could not be read, which happens without access to that gated dataset. The
-# search uses the .npy files and is unaffected, so this is a warning rather than an error.
+# The text files are only used by LLMFineTuning and LLMInference. They come out empty when
+# Psych-101-test cannot be read (no access to that gated dataset) or when the text participant ids
+# cannot be lined up with the structural ones. The search uses the .npy files and is unaffected,
+# so this is a warning rather than an error.
+if text_mismatch:
+    print(f"\n WARNING: participant ids could not be matched for {len(text_mismatch)} experiments:")
+    for entry in text_mismatch:
+        print(f"- {entry}")
+
 if empty_text:
     print(f"\n WARNING: {len(empty_text)} text files have no rows, e.g. {empty_text[:3]}")
     print(" Check your Hugging Face access (huggingface-cli login, and accept the terms for")
