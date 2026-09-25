@@ -137,18 +137,26 @@ sft_config = SFTConfig(
     logging_steps=1,
     report_to="none",
     include_num_input_tokens_seen=True,    # produces error somehow
-    # --- Evaluation
-    eval_strategy="steps",
+    # --- Evaluation ("no" for a smoke run: see the comment on max_steps below)
+    eval_strategy="no" if smoke_steps else "steps",
     eval_steps=10,                 # evaluate every 100 steps
     # ---- Saving
-    save_strategy="steps",
+    save_strategy="no" if smoke_steps else "steps",
     save_steps=10,
     save_total_limit=8,
     output_dir=output_dir,
-    # a smoke run exists to see gradients reach the expert adapters, so it skips the periodic
-    # evaluations and checkpoints, which would otherwise cost more than the training steps
-    **({"max_steps": smoke_steps, "eval_strategy": "no", "save_strategy": "no"} if smoke_steps else {}),
+    # a smoke run exists to see gradients reach the expert adapters, so it stops after a few steps
+    # and skips the periodic evaluations and checkpoints, which would cost more than the steps do
+    **({"max_steps": smoke_steps} if smoke_steps else {}),
 )
+
+# SFTConfig accepts different arguments across trl versions, and a rejected one is only discovered
+# after ten minutes of loading the model. This checks the configuration alone, on a login node:
+#   COGMOD_CONFIG_CHECK=1 COGMOD_SMOKE_STEPS=8 python LLMFineTuning/FineTuneQ3LoRA.py
+if os.environ.get("COGMOD_CONFIG_CHECK"):
+    print(f"SFTConfig accepted. max_steps={getattr(sft_config, 'max_steps', None)}, "
+          f"eval_strategy={sft_config.eval_strategy}, save_strategy={sft_config.save_strategy}")
+    raise SystemExit(0)
 
 # ---------- LOAD TOKENIZER & MODEL & APPLY CONFIG ----------
 tokenizer = AutoTokenizer.from_pretrained(
