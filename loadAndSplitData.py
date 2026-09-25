@@ -61,6 +61,7 @@ TARGET_COLS = [
 ]
 
 exps_with_nans = []
+empty_text = []
 split_results = {}
 
 # loop over all data
@@ -155,6 +156,8 @@ for _, exp in experiments.iterrows():
         sub_text = text[text['participant'].isin(split_participants)]
         
         # Export natural language prompts to CSV
+        if len(sub_text) == 0:
+            empty_text.append(f"{exp['dir']}/{split_label}_text_{exp['experiment']}.csv")
         sub_text.to_csv(f"{script_dir}/Data/{exp['dir']}/{split_label}_text_{exp['experiment']}.csv", index=False)
 
         # Export clean tensor states to NumPy, as integers so that choices can be used as indices
@@ -168,6 +171,16 @@ if exps_with_nans:
         print(f"- {entry['name']}: {entry['removed_rows']} rows removed")
 else:
     print("\n No NaNs found in any experiments.")
+
+# The text files are only used by LLMFineTuning and LLMInference, and they are empty when
+# Psych-101-test could not be read, which happens without access to that gated dataset. The
+# search uses the .npy files and is unaffected, so this is a warning rather than an error.
+if empty_text:
+    print(f"\n WARNING: {len(empty_text)} text files have no rows, e.g. {empty_text[:3]}")
+    print(" Check your Hugging Face access (huggingface-cli login, and accept the terms for")
+    print(" marcelbinz/Psych-101-test), then run this script again before fine-tuning or LLM inference.")
+else:
+    print("\n All text files contain data.")
 
 # Result:
 """
