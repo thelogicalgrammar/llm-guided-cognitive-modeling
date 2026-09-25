@@ -384,20 +384,44 @@ from the base only in attention, linear attention and the shared MLPs. peft fixe
         pip install torch transformers trl "peft>=0.19.1" accelerate liger-kernel bitsandbytes
         deactivate && cogmod
 
-[ ] R.2 A 20-step smoke test (~30 min on 3 H100s, ~290 SBU). The script reports how many expert
+[ ] R.2 Check the configuration and the data first: this needs no GPU and takes about a minute on a
+        login node. It validates the SFTConfig arguments this trl version accepts, the tokeniser,
+        every transcript, and the packages the run needs.
+
+        bash LLMFineTuning/checkFineTuneSetup.sh
+
+        Expect "730 train sequences", "143023 (5.1%) are human choices" and "config and data OK".
+        A percentage of 0 or 100 means the choice mask was lost and the run would optimise the wrong
+        objective; the script stops rather than start.
+
+[ ] R.3 An 8-step smoke test (~50 min on 3 H100s, ~480 SBU). The script reports how many expert
         lora_B tensors have moved off zero, after 5 steps and again at the end.
 
         mkdir -p results error
-        COGMOD_SMOKE_STEPS=20 COGMOD_FINETUNE_OUT=$PROJECT/FineTuneSmoke \
-            sbatch --export=ALL,COGMOD_SMOKE_STEPS=20,COGMOD_FINETUNE_OUT=$PROJECT/FineTuneSmoke \
-            LLMFineTuning/run_FineTuneQ3LoRAjob.sh
+        COGMOD_SMOKE_STEPS=8 COGMOD_FINETUNE_OUT=$PROJECT/FineTuneSmoke \
+            sbatch --export=ALL,COGMOD_SMOKE_STEPS=8,COGMOD_FINETUNE_OUT=$PROJECT/FineTuneSmoke \
+            --time=1:30:00 LLMFineTuning/run_FineTuneQ3LoRAjob.sh
         grep -E "adapter tensors on the experts|expert adapter check|after training" results/FineTuneLoRAQ3_<jobid>.log
 
-        "0 of N expert lora_B tensors are non-zero" means the experts still do not train, and the
-        honest course is to report the limitation rather than spend a full run on it.
+        "0 of N expert lora_B tensors are non-zero" would mean the experts still do not train, and
+        the honest course is to report the limitation rather than spend a full run on it.
 
-[ ] R.3 If they do train, the full run is the same job without the smoke variables (3 epochs,
-        ~3 h, ~1730 SBU), then merge as in step 3.2 and check with checkMerge.py.
+        Measured on 2026-09-25 with peft 0.21.0, transformers 5.17.0, trl 1.14.0: 96 of 96 expert
+        lora_B tensors non-zero at step 5 and at the end, so the experts do train on this stack.
+
+[ ] R.4 The full run is the same job without the smoke variables. Measured cost: 339 s per
+        optimizer step, one epoch is about 20.6 steps, so 3 epochs is about 62 steps, roughly 6 h of
+        training plus the baseline and periodic evaluations. Allow 10 h (the job asks for that) and
+        about 4000 SBU on 3 GPUs. The model is split across the three GPUs rather than replicated,
+        so only one is computing at a time; this is the price of an 80B model in bf16, not a
+        misconfiguration.
+
+        sbatch LLMFineTuning/run_FineTuneQ3LoRAjob.sh
+
+        It checkpoints every 10 steps, so if it does run out of time, resume with
+        COGMOD_RESUME_FROM=<checkpoint dir>. Then merge as in step 3.2 and check with checkMerge.py:
+        this time the expert weights should differ from the base, which is what mergeExpertDeltas.py
+        existed to work around and should no longer be needed.
 
 
 7. AFTER THE SEARCH

@@ -3,7 +3,10 @@
 #SBATCH --account=gusr58621
 #SBATCH --partition=gpu_h100        # request H100 partition
 #SBATCH --gres=gpu:3                # request 3 GPUs
-#SBATCH --time=3:00:00              # runtime
+#SBATCH --time=10:00:00             # measured: 339 s per optimizer step, ~62 steps for 3 epochs,
+                                    # plus the baseline and periodic evaluations. A smoke run needs
+                                    # well under an hour, so override it there:
+                                    #   COGMOD_SMOKE_STEPS=8 sbatch --time=1:30:00 ...
 #SBATCH --output=results/%x_%j.log  # log file
 #SBATCH --error=error/%x_%j.txt     # error file
 #SBATCH --export=ALL                # COGMOD_SMOKE_STEPS and the env.sh paths reach the job
