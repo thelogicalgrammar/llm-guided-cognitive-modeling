@@ -239,10 +239,10 @@ if config_check:
           f"eval_strategy={sft_config.eval_strategy}, save_strategy={sft_config.save_strategy} "
           f"(bf16 was disabled for this check only)")
     for package in ("bitsandbytes", "liger_kernel", "peft", "accelerate"):
-        try:
-            print(f"  {package}: {__import__(package).__version__}")
-        except Exception as problem:                      # an optional dependency the run needs
-            print(f"  {package}: NOT IMPORTABLE ({type(problem).__name__}: {problem})")
+        try:                                              # not every package carries a __version__
+            print(f"  {package}: {getattr(__import__(package), '__version__', 'importable')}")
+        except ImportError as problem:                    # a dependency the run needs is missing
+            print(f"  {package}: NOT IMPORTABLE ({problem})")
     raise SystemExit(0)
 
 # ---------- LOAD MODEL & APPLY CONFIG ----------
