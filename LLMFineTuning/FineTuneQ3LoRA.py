@@ -4,6 +4,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from peft import LoraConfig, get_peft_model
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 import pandas as pd
+import os
+from transformers import TrainerCallback
 from datasets import Dataset, concatenate_datasets
 from collections import defaultdict, Counter
 import re
@@ -73,10 +75,40 @@ def get_dataset(df):
     return dataset
 
 # ---------- DEFINE CONFIGURATIONS ----------
-model_path = "/path/to/your/Models/Qwen3-Coder-Next"
-data_path = "/path/to/your/Data/"
+model_path = os.environ.get("COGMOD_BASE_MODEL", "/path/to/your/Models/Qwen3-Coder-Next")
+data_path = os.environ.get("COGMOD_DATA_PATH", "/path/to/your/Data/").rstrip("/") + "/"
+output_dir = os.environ.get("COGMOD_FINETUNE_OUT", f"{data_path}FineTune/").rstrip("/") + "/"
 max_seq_length = 17555 # Adjust based on your needs
 seed=3407
+
+# A short run to check that the expert adapters train at all: peft can attach adapters to the
+# fused MoE parameters through target_parameters and never update them, which leaves lora_B at
+# its zero initialisation and produces a LoRA that does nothing to the experts. That is what
+# happened to the published adapter, and it is invisible until the weights are inspected.
+smoke_steps = int(os.environ.get("COGMOD_SMOKE_STEPS", 0))
+
+class ExpertAdapterCheck(TrainerCallback):
+    """After a few optimizer steps, report whether the expert adapters have moved off zero"""
+    def __init__(self, check_at=5):
+        self.check_at = check_at
+
+    def on_step_end(self, args, state, control, model=None, **kwargs):
+        if state.global_step != self.check_at or model is None:
+            return
+        expert = [(name, parameter.detach().float().norm().item())
+                  for name, parameter in model.named_parameters()
+                  if "experts" in name and "lora_B" in name]
+        other = [(name, parameter.detach().float().norm().item())
+                 for name, parameter in model.named_parameters()
+                 if "experts" not in name and "lora_B" in name]
+        moved = sum(1 for _, norm in expert if norm > 0)
+        print(f"\n[expert adapter check, step {state.global_step}] "
+              f"{moved} of {len(expert)} expert lora_B tensors are non-zero; "
+              f"{sum(1 for _, n in other if n > 0)} of {len(other)} elsewhere", flush=True)
+        if expert and moved == 0:
+            print("[expert adapter check] the expert adapters are not being trained: peft is not "
+                  "propagating gradients to the parameters targeted through target_parameters. "
+                  "Fitting will continue, but the experts will not be fine-tuned.", flush=True)
 
 # ---------- DEFINE SFT, LORA CONFIG ----------
 sft_config = SFTConfig(
@@ -112,7 +144,8 @@ sft_config = SFTConfig(
     save_strategy="steps",
     save_steps=10,
     save_total_limit=8,
-    output_dir=f"{data_path}FineTune/",
+    output_dir=output_dir,
+    **({"max_steps": smoke_steps} if smoke_steps else {}),
 )
 
 # ---------- LOAD TOKENIZER & MODEL & APPLY CONFIG ----------
@@ -222,20 +255,32 @@ model = get_peft_model(model, lora_config)
 # ------ CHECK IF TRAINABLE PARAMETERS IS PROPERLY SET (SHOULD BE 1% -  LOW NUMBER)
 model.print_trainable_parameters()
 
+# count the adapter tensors on the experts before training, so a silent failure is visible later
+expert_adapters = [n for n, _ in model.named_parameters() if "experts" in n and "lora_" in n]
+print(f"adapter tensors on the experts: {len(expert_adapters)}", flush=True)
+
 # ---------- CREATE SFTTRAINER and TRAIN ----------
 trainer = SFTTrainer(
     model = model,
     train_dataset = train_data,
     eval_dataset = eval_data,
-    args = sft_config
+    args = sft_config,
+    callbacks = [ExpertAdapterCheck(check_at=min(5, smoke_steps - 1) if smoke_steps else 5)],
 )
 
-# start training process
-trainer.train(resume_from_checkpoint=f"{data_path}FineTuning/checkpoint-40")
+# start training process, resuming only if a checkpoint was asked for and exists
+resume = os.environ.get("COGMOD_RESUME_FROM")
+trainer.train(resume_from_checkpoint=resume if resume and os.path.isdir(resume) else None)
 
 # Run final evaluation on last LoRA state and store it
 trainer.evaluate()
-model.save_pretrained(f"{data_path}FineTuned/Final_LoRA")
+model.save_pretrained(f"{output_dir}Final_LoRA")
 
 # store log history
-pd.DataFrame(trainer.state.log_history).to_csv(f"{data_path}FineTuning/SFTTrainer_logs.csv", index=False)
+pd.DataFrame(trainer.state.log_history).to_csv(f"{output_dir}SFTTrainer_logs.csv", index=False)
+
+# and report the expert adapters one last time: zero norms mean the experts were never adapted
+final = [(n, p.detach().float().norm().item()) for n, p in model.named_parameters()
+         if "experts" in n and "lora_B" in n]
+print(f"after training: {sum(1 for _, v in final if v > 0)} of {len(final)} expert lora_B tensors "
+      f"are non-zero", flush=True)

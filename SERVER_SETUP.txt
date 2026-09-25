@@ -370,6 +370,36 @@ print(r.metrics)"
         invalid-edit rates.
 
 
+RETRAINING THE LORA (optional)
+------------------------------
+
+The published adapter's expert weights are all zero: peft 0.18 attached adapters to the fused
+MoE parameters through target_parameters and never trained them, so the fine-tuned model differs
+from the base only in attention, linear attention and the shared MLPs. peft fixed the layout in
+0.19.1. To find out whether the experts train in a current stack, before paying for a full run:
+
+[ ] R.1 An environment with a newer peft, leaving FT/ alone.
+
+        python -m venv $PROJECT/venvs/finetune && source $PROJECT/venvs/finetune/bin/activate
+        pip install torch transformers trl "peft>=0.19.1" accelerate liger-kernel bitsandbytes
+        deactivate && cogmod
+
+[ ] R.2 A 20-step smoke test (~30 min on 3 H100s, ~290 SBU). The script reports how many expert
+        lora_B tensors have moved off zero, after 5 steps and again at the end.
+
+        mkdir -p results error
+        COGMOD_SMOKE_STEPS=20 COGMOD_FINETUNE_OUT=$PROJECT/FineTuneSmoke \
+            sbatch --export=ALL,COGMOD_SMOKE_STEPS=20,COGMOD_FINETUNE_OUT=$PROJECT/FineTuneSmoke \
+            LLMFineTuning/run_FineTuneQ3LoRAjob.sh
+        grep -E "adapter tensors on the experts|expert adapter check|after training" results/FineTuneLoRAQ3_<jobid>.log
+
+        "0 of N expert lora_B tensors are non-zero" means the experts still do not train, and the
+        honest course is to report the limitation rather than spend a full run on it.
+
+[ ] R.3 If they do train, the full run is the same job without the smoke variables (3 epochs,
+        ~3 h, ~1730 SBU), then merge as in step 3.2 and check with checkMerge.py.
+
+
 7. AFTER THE SEARCH
 -------------------
 
