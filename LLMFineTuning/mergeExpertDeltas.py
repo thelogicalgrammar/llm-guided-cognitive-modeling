@@ -100,6 +100,27 @@ def main():
     shards = sorted({shard for name, shard in index.items() if delta_for(name, pairs) is not None})
     print(f"model: {len(shards)} of {len(set(index.values()))} shards contain expert weights")
 
+    expert_names = [name for name in index if delta_for(name, pairs) is not None]
+
+    if args.dry_run:
+        # sample a few tensors rather than reading every shard: enough to check the shapes line up
+        # and that the deltas are a sensible size relative to the weights
+        sample = []
+        for which in ("gate_proj", "up_proj", "down_proj"):
+            of_kind = [n for n in expert_names if n.endswith(f"{which}.weight")]
+            sample += of_kind[:: max(1, len(of_kind) // 3)][:3]
+        print(f"{len(expert_names)} expert tensors in total; sampling {len(sample)}\n")
+        for name in sample:
+            with safe_open(Path(args.model) / index[name], framework="pt") as f:
+                values = f.get_tensor(name)
+            delta = delta_for(name, pairs)
+            if delta.shape != values.shape:
+                raise SystemExit(f"{name}: delta {tuple(delta.shape)} does not match weight {tuple(values.shape)}")
+            ratio = (delta.norm() / values.float().norm()).item()
+            print(f"  {name:62s} {tuple(values.shape)}  |delta|/|W| = {ratio:.4f}")
+        print("\nrun without --dry-run to apply them")
+        return
+
     changed = relative = 0
     for number, shard in enumerate(shards, 1):
         path = Path(args.model) / shard
@@ -116,15 +137,11 @@ def main():
             relative += (delta.norm() / values.float().norm()).item()
             changed += 1
             tensors[name] = updated.to(values.dtype)
-        if not args.dry_run:
-            save_file(tensors, str(path), metadata=metadata)
-        print(f"  [{number}/{len(shards)}] {shard}: {'would update' if args.dry_run else 'updated'}, "
-              f"{changed} expert tensors so far", flush=True)
+        save_file(tensors, str(path), metadata=metadata)
+        print(f"  [{number}/{len(shards)}] {shard}: updated, {changed} expert tensors so far", flush=True)
 
-    print(f"\n{changed} expert tensors {'would be ' if args.dry_run else ''}updated, "
-          f"mean |delta| / |W| = {relative / max(changed, 1):.4f}")
-    if not args.dry_run:
-        print("check with: python LLMFineTuning/checkMerge.py 5")
+    print(f"\n{changed} expert tensors updated, mean |delta| / |W| = {relative / max(changed, 1):.4f}")
+    print("check with: python LLMFineTuning/checkMerge.py 5")
 
 
 if __name__ == "__main__":
