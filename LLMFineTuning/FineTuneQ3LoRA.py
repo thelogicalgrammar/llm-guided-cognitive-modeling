@@ -16,22 +16,47 @@ def get_dataset(df):
     # extract Features from the data and specifically text for each participant
     features = []
     for _, row in df.iterrows():
+        if not isinstance(row['text'], str):
+            raise SystemExit(f"participant {row['participant']}: the text column holds "
+                             f"{type(row['text']).__name__}, not a transcript")
         text = row['text'].strip()
 
         # extract all answers in <<...>> for this participant
         choices = re.findall(r'<<(.*?)>>', text)
 
         # extract the rest of the sentence after 'labeled'
-        list_segment = re.search(r"labeled\s+([^.]+)", text).group(1)
+        list_segment = re.search(r"labeled\s+([^.]+)", text)
+        if list_segment is None:
+            raise SystemExit(f"participant {row['participant']}: no 'labeled ...' phrase, so the "
+                             f"options cannot be read. First 200 characters:\n{text[:200]}")
+        list_segment = list_segment.group(1)
 
         # get all capital letters
         options = re.findall(r"\b[A-Z]\b", list_segment)
+        if not options:
+            raise SystemExit(f"participant {row['participant']}: no option letters in {list_segment!r}")
 
         # define mapping of character to number (e.g., 'E':0, 'M':1)
         choice_arm_mapping = {opt: i for i, opt in enumerate(options)}
 
-        # tokenize the letters
-        option_ids = [tokenizer(f"<<{opt}", add_special_tokens=False).input_ids[1] for opt in options]
+        unknown = set(choices) - set(choice_arm_mapping)
+        if unknown:
+            raise SystemExit(f"participant {row['participant']}: chose {sorted(unknown)}, which are "
+                             f"not among the options {options}")
+
+        # tokenize the letters. '<<' is one token and the letter the next, so the letter carries a
+        # distinct id from the same letter in running text; if that ever stops holding, the mask
+        # below would silently mark the wrong positions.
+        option_ids = []
+        for opt in options:
+            pieces = tokenizer(f"<<{opt}", add_special_tokens=False).input_ids
+            if len(pieces) < 2:
+                raise SystemExit(f"'<<{opt}' tokenises to {len(pieces)} token(s), so the option id "
+                                 f"cannot be read off position 1")
+            option_ids.append(pieces[1])
+        if len(set(option_ids)) != len(options):
+            raise SystemExit(f"options {options} do not have distinct token ids ({option_ids}), so "
+                             f"choices could not be told apart")
 
         # define mapping of token_id to number
         option_token_mapping = {opt: i for i, opt in enumerate(option_ids)}
@@ -136,7 +161,9 @@ sft_config = SFTConfig(
     logging_strategy="steps",
     logging_steps=1,
     report_to="none",
-    include_num_input_tokens_seen=True,    # produces error somehow
+    # counting tokens seen is only a logging convenience, and the comment left here said it errored;
+    # with packing and padding_free there is no attention mask for it to count, so leave it off
+    include_num_input_tokens_seen=False,
     # --- Evaluation ("no" for a smoke run: see the comment on max_steps below)
     eval_strategy="no" if smoke_steps else "steps",
     eval_steps=10,                 # evaluate every 100 steps
@@ -150,21 +177,66 @@ sft_config = SFTConfig(
     **({"max_steps": smoke_steps} if smoke_steps else {}),
 )
 
-# SFTConfig accepts different arguments across trl versions, and a rejected one is only discovered
-# after ten minutes of loading the model. This checks the configuration alone, on a login node:
-#   COGMOD_CONFIG_CHECK=1 COGMOD_SMOKE_STEPS=8 python LLMFineTuning/FineTuneQ3LoRA.py
-if os.environ.get("COGMOD_CONFIG_CHECK"):
-    print(f"SFTConfig accepted. max_steps={getattr(sft_config, 'max_steps', None)}, "
-          f"eval_strategy={sft_config.eval_strategy}, save_strategy={sft_config.save_strategy}")
-    raise SystemExit(0)
-
-# ---------- LOAD TOKENIZER & MODEL & APPLY CONFIG ----------
+# ---------- LOAD TOKENIZER ----------
 tokenizer = AutoTokenizer.from_pretrained(
     model_path,
     trust_remote_code=True,
     local_files_only=True
 )
 
+# ---------- LOAD DATA ----------
+# Deliberately before the model: loading 80B parameters takes about ten minutes, and a problem in
+# the data used to surface only after paying for it.
+experiments = [
+    {'name': 'TB', 'experiment': 'exp1', 'split': 'Train'},
+    {'name': 'TB', 'experiment': 'exp2', 'split': 'Train'},
+    {'name': 'HSo', 'experiment': 'exp0', 'split': 'Train'},
+    {'name': 'HW', 'experiment': 'exp0', 'split': 'Train'},
+    {'name': 'DB', 'experiment': 'exp0', 'split': 'Train'},
+]
+
+train_dats = []
+eval_dats = []
+for exp in experiments:
+
+    train = pd.read_csv(f"{data_path}{exp['name']}/Train_text_{exp['experiment']}.csv")
+    eval = pd.read_csv(f"{data_path}{exp['name']}/Val_text_{exp['experiment']}.csv")
+
+    # an empty text export is the failure this run cannot survive, and it says nothing by itself
+    for split, frame in (("Train", train), ("Val", eval)):
+        if len(frame) == 0:
+            raise SystemExit(f"{data_path}{exp['name']}/{split}_text_{exp['experiment']}.csv has no "
+                             f"rows. Re-run loadAndSplitData.py; it reports empty text exports.")
+
+    # get the dataset for this experiment
+    train_dats.append(get_dataset(train))
+    eval_dats.append(get_dataset(eval))
+
+train_data = concatenate_datasets(train_dats)
+eval_data = concatenate_datasets(eval_dats)
+
+print(f"train sequences: {len(train_data)}   eval sequences: {len(eval_data)}", flush=True)
+marked = sum(sum(row) for row in train_data["completion_mask"])
+tokens = sum(len(row) for row in train_data["input_ids"])
+print(f"tokens: {tokens}, of which {marked} are human choices the loss is computed on", flush=True)
+if marked == 0:
+    raise SystemExit("no tokens are marked as choices: the option letters were not found in the "
+                     "tokenised text, so training would have nothing to learn from.")
+
+# The configuration, the tokeniser and the data are all checked above without a GPU, so a mistake in
+# any of them is found on a login node in a minute rather than after loading the model:
+#   COGMOD_CONFIG_CHECK=1 COGMOD_SMOKE_STEPS=8 python LLMFineTuning/FineTuneQ3LoRA.py
+if os.environ.get("COGMOD_CONFIG_CHECK"):
+    print(f"\nconfig and data OK. max_steps={getattr(sft_config, 'max_steps', None)}, "
+          f"eval_strategy={sft_config.eval_strategy}, save_strategy={sft_config.save_strategy}")
+    for package in ("bitsandbytes", "liger_kernel", "peft", "accelerate"):
+        try:
+            print(f"  {package}: {__import__(package).__version__}")
+        except Exception as problem:                      # an optional dependency the run needs
+            print(f"  {package}: NOT IMPORTABLE ({type(problem).__name__}: {problem})")
+    raise SystemExit(0)
+
+# ---------- LOAD MODEL & APPLY CONFIG ----------
 apply_liger_kernel_to_qwen3_moe(
     rope=True,
     swiglu=True,
@@ -181,29 +253,6 @@ model = AutoModelForCausalLM.from_pretrained(
     low_cpu_mem_usage=True,
     attn_implementation="kernels-community/flash-attn3",    # Use flash-attention for speed and avoiding cross-attention
 )
-
-# ---------- LOAD DATA ----------
-experiments = [
-    {'name': 'TB', 'experiment': 'exp1', 'split': 'Train'},
-    {'name': 'TB', 'experiment': 'exp2', 'split': 'Train'},
-    {'name': 'HSo', 'experiment': 'exp0', 'split': 'Train'},
-    {'name': 'HW', 'experiment': 'exp0', 'split': 'Train'},
-    {'name': 'DB', 'experiment': 'exp0', 'split': 'Train'},
-]
-
-train_dats = []
-eval_dats = []
-for exp in experiments:
-
-    train = pd.read_csv(f"{data_path}{exp['name']}/Train_text_{exp['experiment']}.csv")
-    eval = pd.read_csv(f"{data_path}{exp['name']}/Val_text_{exp['experiment']}.csv")
-
-    # get the dataset for this experiment
-    train_dats.append(get_dataset(train))
-    eval_dats.append(get_dataset(eval))
-
-train_data = concatenate_datasets(train_dats)
-eval_data = concatenate_datasets(eval_dats)
 
 # ----- BASELINE EVALUATION PERFORMANCE -----
 # the loss of the unadapted model, for comparison with the fine-tuned one. This is a full pass over
@@ -279,7 +328,7 @@ trainer = SFTTrainer(
     train_dataset = train_data,
     eval_dataset = eval_data,
     args = sft_config,
-    callbacks = [ExpertAdapterCheck(check_at=min(5, smoke_steps - 1) if smoke_steps else 5)],
+    callbacks = [ExpertAdapterCheck(check_at=min(5, smoke_steps) if smoke_steps else 5)],
 )
 
 # start training process, resuming only if a checkpoint was asked for and exists
