@@ -145,7 +145,9 @@ sft_config = SFTConfig(
     save_steps=10,
     save_total_limit=8,
     output_dir=output_dir,
-    **({"max_steps": smoke_steps} if smoke_steps else {}),
+    # a smoke run exists to see gradients reach the expert adapters, so it skips the periodic
+    # evaluations and checkpoints, which would otherwise cost more than the training steps
+    **({"max_steps": smoke_steps, "eval_strategy": "no", "save_strategy": "no"} if smoke_steps else {}),
 )
 
 # ---------- LOAD TOKENIZER & MODEL & APPLY CONFIG ----------
@@ -196,15 +198,19 @@ train_data = concatenate_datasets(train_dats)
 eval_data = concatenate_datasets(eval_dats)
 
 # ----- BASELINE EVALUATION PERFORMANCE -----
-baseline_trainer = SFTTrainer(
-    model=model,
-    train_dataset=train_data,
-    eval_dataset=eval_data,
-    args=sft_config
-)
+# the loss of the unadapted model, for comparison with the fine-tuned one. This is a full pass over
+# the validation set, so a smoke run skips it.
+os.makedirs(output_dir, exist_ok=True)
+if not smoke_steps:
+    baseline_trainer = SFTTrainer(
+        model=model,
+        train_dataset=train_data,
+        eval_dataset=eval_data,
+        args=sft_config
+    )
 
-baseline_metrics = baseline_trainer.evaluate()
-pd.DataFrame([baseline_metrics]).to_csv(f"{data_path}FineTune/baseline_metrics.csv", index=False)
+    baseline_metrics = baseline_trainer.evaluate()
+    pd.DataFrame([baseline_metrics]).to_csv(f"{output_dir}baseline_metrics.csv", index=False)
 
 # ------- DEFINE LORA -------
 # load config
@@ -272,9 +278,11 @@ trainer = SFTTrainer(
 resume = os.environ.get("COGMOD_RESUME_FROM")
 trainer.train(resume_from_checkpoint=resume if resume and os.path.isdir(resume) else None)
 
-# Run final evaluation on last LoRA state and store it
-trainer.evaluate()
-model.save_pretrained(f"{output_dir}Final_LoRA")
+# Run final evaluation on last LoRA state and store it. The adapter is saved either way, so a smoke
+# run leaves something that checkMerge.py can inspect.
+if not smoke_steps:
+    trainer.evaluate()
+model.save_pretrained(f"{output_dir}{'Smoke_LoRA' if smoke_steps else 'Final_LoRA'}")
 
 # store log history
 pd.DataFrame(trainer.state.log_history).to_csv(f"{output_dir}SFTTrainer_logs.csv", index=False)
