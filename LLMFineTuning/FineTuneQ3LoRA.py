@@ -112,6 +112,11 @@ seed=3407
 # happened to the published adapter, and it is invisible until the weights are inspected.
 smoke_steps = int(os.environ.get("COGMOD_SMOKE_STEPS", 0))
 
+# COGMOD_CONFIG_CHECK runs everything that does not need a GPU and then stops. A login node has no
+# GPU, so bf16 has to give way there; every other argument is validated exactly as the real run has
+# it. See the check itself, below the data.
+config_check = bool(os.environ.get("COGMOD_CONFIG_CHECK"))
+
 class ExpertAdapterCheck(TrainerCallback):
     """After a few optimizer steps, report whether the expert adapters have moved off zero"""
     def __init__(self, check_at=5):
@@ -144,7 +149,8 @@ sft_config = SFTConfig(
     max_length = max_seq_length,
     shuffle_dataset=True,
     seed=seed,
-    bf16=True,
+    bf16=not config_check,            # a login node has no GPU to run bf16 on
+    use_cpu=config_check,
     # ---- Regiment
     per_device_train_batch_size = 1,  # one batch at a time to avoid OOM
     per_device_eval_batch_size = 1,   # same for evaluation
@@ -155,7 +161,9 @@ sft_config = SFTConfig(
     # ----- Kernel  
     prediction_loss_only = True,
     # ----- Optimizer
-    optim = "paged_adamw_8bit", 
+    # the paged optimiser needs CUDA, so the GPU-free check uses a plain one and reports whether
+    # bitsandbytes (which this one needs) imports at all
+    optim = "adamw_torch" if config_check else "paged_adamw_8bit",
     learning_rate = 2e-4,
     # --- Logging
     logging_strategy="steps",
@@ -226,9 +234,10 @@ if marked == 0:
 # The configuration, the tokeniser and the data are all checked above without a GPU, so a mistake in
 # any of them is found on a login node in a minute rather than after loading the model:
 #   COGMOD_CONFIG_CHECK=1 COGMOD_SMOKE_STEPS=8 python LLMFineTuning/FineTuneQ3LoRA.py
-if os.environ.get("COGMOD_CONFIG_CHECK"):
+if config_check:
     print(f"\nconfig and data OK. max_steps={getattr(sft_config, 'max_steps', None)}, "
-          f"eval_strategy={sft_config.eval_strategy}, save_strategy={sft_config.save_strategy}")
+          f"eval_strategy={sft_config.eval_strategy}, save_strategy={sft_config.save_strategy} "
+          f"(bf16 was disabled for this check only)")
     for package in ("bitsandbytes", "liger_kernel", "peft", "accelerate"):
         try:
             print(f"  {package}: {__import__(package).__version__}")
