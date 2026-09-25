@@ -78,12 +78,19 @@ def get_dataset(df):
             if token in option_ids:
                 completion_mask[pos] = 1
 
+        # Build labels here rather than leaving it to trl. trl only folds a completion_mask into the
+        # labels when completion_only_loss is true, and that resolves to false for a dataset without
+        # prompt/completion columns, which is ours: the mask would be dropped and the loss taken over
+        # every token of the transcript instead of the choices. A dataset that supplies labels is
+        # used as given, which is what we want and does not depend on that default.
+        labels = [token if keep else -100 for token, keep in zip(input_ids, completion_mask)]
+
         # create the features
         features.append({
             # model data
             "participant": row['participant'],
             "input_ids": input_ids,
-            "completion_mask": completion_mask,
+            "labels": labels,
 
             # metadata
             "option_ids": option_ids,
@@ -95,7 +102,7 @@ def get_dataset(df):
     features = pd.DataFrame(features)
 
     # convert to HF Dataset
-    dataset = Dataset.from_pandas(features[["input_ids", "completion_mask"]])
+    dataset = Dataset.from_pandas(features[["input_ids", "labels"]])
 
     return dataset
 
@@ -158,8 +165,14 @@ sft_config = SFTConfig(
     gradient_checkpointing=True,
     warmup_steps = 2,              # each step is 8 forward & backward, and 1 optimizer call
     num_train_epochs = 3,
-    # ----- Kernel  
+    # ----- Kernel
     prediction_loss_only = True,
+    # trl defaults loss_type to "chunked_nll", which patches model.forward assuming it is a bound
+    # method. apply_liger_kernel_to_qwen3_moe below has already replaced it with a partial for the
+    # fused cross-entropy, so the patch raises AttributeError on __func__. trl's own documentation
+    # says chunked_nll is incompatible with liger and defaults to "nll" when it applies liger
+    # itself; we apply liger directly, so say so here. The fused kernel does this work anyway.
+    loss_type = "nll",
     # ----- Optimizer
     # the paged optimiser needs CUDA, so the GPU-free check uses a plain one and reports whether
     # bitsandbytes (which this one needs) imports at all
@@ -224,12 +237,15 @@ train_data = concatenate_datasets(train_dats)
 eval_data = concatenate_datasets(eval_dats)
 
 print(f"train sequences: {len(train_data)}   eval sequences: {len(eval_data)}", flush=True)
-marked = sum(sum(row) for row in train_data["completion_mask"])
+marked = sum(sum(1 for label in row if label != -100) for row in train_data["labels"])
 tokens = sum(len(row) for row in train_data["input_ids"])
-print(f"tokens: {tokens}, of which {marked} are human choices the loss is computed on", flush=True)
+print(f"tokens: {tokens}, of which {marked} ({marked / tokens:.1%}) are human choices the loss is "
+      f"computed on", flush=True)
 if marked == 0:
     raise SystemExit("no tokens are marked as choices: the option letters were not found in the "
                      "tokenised text, so training would have nothing to learn from.")
+if marked == tokens:
+    raise SystemExit("every token would contribute to the loss, so the choice mask was lost")
 
 # The configuration, the tokeniser and the data are all checked above without a GPU, so a mistake in
 # any of them is found on a login node in a minute rather than after loading the model:
