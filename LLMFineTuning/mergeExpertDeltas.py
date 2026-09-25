@@ -67,9 +67,11 @@ def adapter_pairs(lora_dir):
     return pairs, scale
 
 
+EXPERT_WEIGHT = re.compile(r"layers\.(\d+)\.mlp\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight$")
+
 def delta_for(name, pairs):
     """The delta for one expert tensor of the merged model, or None if the name is not an expert weight"""
-    match = re.search(r"layers\.(\d+)\.mlp\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight$", name)
+    match = EXPERT_WEIGHT.search(name)
     if not match:
         return None
     layer, expert, which = int(match.group(1)), int(match.group(2)), match.group(3)
@@ -97,10 +99,10 @@ def main():
     print(f"adapter: {len(pairs)} layers with expert deltas, scale alpha/r = {scale:g}")
 
     index = json.load(open(Path(args.model) / "model.safetensors.index.json"))["weight_map"]
-    shards = sorted({shard for name, shard in index.items() if delta_for(name, pairs) is not None})
+    shards = sorted({shard for name, shard in index.items() if EXPERT_WEIGHT.search(name)})
     print(f"model: {len(shards)} of {len(set(index.values()))} shards contain expert weights")
 
-    expert_names = [name for name in index if delta_for(name, pairs) is not None]
+    expert_names = [name for name in index if EXPERT_WEIGHT.search(name)]
 
     if args.dry_run:
         # sample a few tensors rather than reading every shard: enough to check the shapes line up
