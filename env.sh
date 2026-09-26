@@ -17,7 +17,11 @@ export COGMOD_RESULTS_PATH=$PROJECT/Results/EvolvedCogModels   # test-set result
 
 # inputs and output of LLMFineTuning/mergeLoRA.py
 export COGMOD_BASE_MODEL=$MODELS/Qwen3-Coder-Next
-export COGMOD_LORA=$PROJECT/FineTune/checkpoint-40/FineTuneResults/checkpoint-40
+# The adapter trained on 2026-09-26: 3 epochs, choice-only loss, and all 96 expert lora_B tensors
+# non-zero. The published one ($PROJECT/FineTune/checkpoint-40/FineTuneResults/checkpoint-40) had
+# untrained experts and was fitted on the whole transcript rather than the choices, so merging it
+# reproduces neither the intended model nor a useful comparison.
+export COGMOD_LORA=$COGMOD_DATA_PATH/FineTune/Final_LoRA
 export COGMOD_MERGED_MODEL=$MODELS/Qwen3-Coder-Next-Merged
 
 # where FineTuneQ3LoRA.py writes; the same default the job script uses, so the training run and the

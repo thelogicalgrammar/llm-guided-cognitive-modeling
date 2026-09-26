@@ -66,7 +66,8 @@ def loss_report(run_dir):
         print(f"  epochs reached: {history['epoch'].max():.2f}")
 
     if "eval_loss" in history:
-        evals = history[history["eval_loss"].notna()][["step", "eval_loss"]]
+        # the final evaluate() logs at the same step as the last periodic one, so drop the repeat
+        evals = history[history["eval_loss"].notna()][["step", "eval_loss"]].drop_duplicates()
         baseline = run_dir / "baseline_metrics.csv"
         if baseline.is_file():
             before = pd.read_csv(baseline)
