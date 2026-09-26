@@ -80,8 +80,17 @@ def loss_report(run_dir):
 
 
 if __name__ == "__main__":
-    run_dir = Path(sys.argv[1] if len(sys.argv) > 1
-                   else os.environ.get("COGMOD_FINETUNE_OUT", "")).expanduser()
+    # an unset COGMOD_FINETUNE_OUT must not quietly become the working directory, which then reports
+    # that the run never finished
+    given = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("COGMOD_FINETUNE_OUT") or ""
+    if not given.strip():
+        project = os.environ.get("PROJECT")
+        given = f"{project}/FineTuneNew" if project else ""
+        if not given:
+            raise SystemExit("pass the run directory, or set COGMOD_FINETUNE_OUT (env.sh does)")
+        print(f"COGMOD_FINETUNE_OUT is not set; trying the default {given}")
+
+    run_dir = Path(given).expanduser()
     if not run_dir.is_dir():
         raise SystemExit(f"not a directory: {run_dir!s} (pass it, or set COGMOD_FINETUNE_OUT)")
 

@@ -19,6 +19,10 @@ export COGMOD_RESULTS_PATH=$PROJECT/Results/EvolvedCogModels   # test-set result
 export COGMOD_BASE_MODEL=$MODELS/Qwen3-Coder-Next
 export COGMOD_LORA=$PROJECT/FineTune/checkpoint-40/FineTuneResults/checkpoint-40
 export COGMOD_MERGED_MODEL=$MODELS/Qwen3-Coder-Next-Merged
+
+# where FineTuneQ3LoRA.py writes; the same default the job script uses, so the training run and the
+# scripts that read it agree without having to be told twice
+export COGMOD_FINETUNE_OUT=$PROJECT/FineTuneNew
 export MYQUOTA_PROJECTSPACES=$PROJECT          # so `myquota` reports the project space
 
 # one thread per process: OpenEvolve runs many evaluations in parallel
