@@ -7,6 +7,7 @@
 #SBATCH --time=03:00:00
 #SBATCH --output=result/merge_output_%j.log
 #SBATCH --error=error/%x_%j.txt
+#SBATCH --export=ALL                       # COGMOD_MERGED_MODEL and friends reach the job
 
 
 # load environment
