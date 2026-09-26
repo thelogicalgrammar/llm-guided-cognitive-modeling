@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+from pathlib import Path
 
 import peft
 import torch
@@ -79,10 +81,52 @@ base_model = AutoModelForCausalLM.from_pretrained(
     **dtype_kwarg,
 )
 
+def adapter_with_ordered_patterns(source):
+    """A copy of the adapter whose rank_pattern is ordered specific-first, or the adapter unchanged
+
+    peft records a rank in the saved config that it did not use. Training this adapter with
+    target_modules gate_proj and up_proj made peft fuse them, drop them from target_modules, and add
+    `.*\\.gate_up_proj: 32` to rank_pattern (16 + 16) and 64 to alpha_pattern. That key also matches
+    `...mlp.experts.gate_up_proj`, and peft.utils.other.get_pattern_key returns the *first* matching
+    key, so on reload the expert parameter is rebuilt at rank 32 while the file holds rank 1:
+
+        size mismatch for ...mlp.experts.base_layer.lora_A.default.weight
+
+    During training the config held only the two specific keys, so rank 1 was used and the weights
+    are correct. Ordering the patterns longest-first makes the specific keys win, which reproduces
+    the training ranks. Verified against peft 0.21.0.
+    """
+    config_path = Path(source) / "adapter_config.json"
+    config = json.load(open(config_path))
+    patterns = {attr: config.get(attr) or {} for attr in ("rank_pattern", "alpha_pattern")}
+    if not any(patterns.values()):
+        return source
+
+    ordered = {attr: dict(sorted(value.items(), key=lambda kv: -len(kv[0])))
+               for attr, value in patterns.items()}
+    if all(list(ordered[attr]) == list(patterns[attr]) for attr in patterns):
+        print("pattern keys are already ordered specific-first")
+        return source
+
+    # a directory of links, so the weights are not copied and the original is untouched
+    work = Path(os.environ.get("TMPDIR", "/tmp")) / "cogmod_adapter_reordered"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    for entry in Path(source).iterdir():
+        if entry.name != "adapter_config.json":
+            (work / entry.name).symlink_to(entry.resolve())
+    for attr, value in ordered.items():
+        if config.get(attr) is not None:
+            config[attr] = value
+    json.dump(config, open(work / "adapter_config.json", "w"), indent=2)
+    print(f"reordered pattern keys so the specific ones match first:\n  {ordered['rank_pattern']}")
+    return str(work)
+
+
 # ---------- LOAD LORA ----------
 model = PeftModel.from_pretrained(
     base_model,
-    lora_adapter_path,
+    adapter_with_ordered_patterns(lora_adapter_path),
     **dtype_kwarg,
 )
 
