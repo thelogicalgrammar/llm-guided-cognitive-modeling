@@ -26,5 +26,14 @@ python -c "import peft, transformers; print('peft', peft.__version__, '| transfo
 
 mkdir -p result error
 
+# refuse to spend three hours before finding out one of these is empty
+need COGMOD_BASE_MODEL COGMOD_LORA COGMOD_MERGED_MODEL || exit 1
+
 # run python file
-python LLMFineTuning/mergeLoRA.py
+python LLMFineTuning/mergeLoRA.py || exit 1
+
+# Stamp the merged model with the adapter that made it. A merged directory otherwise carries no
+# record of its own contents, so the only way to notice it predates a retrained adapter is to
+# compare mtimes by hand - which is how the 2026-09-24 merge survived the 2026-09-26 retraining.
+provenance "$COGMOD_MERGED_MODEL" \
+  base="$COGMOD_BASE_MODEL" adapter="$COGMOD_LORA" merge_venv="$MERGE_VENV"

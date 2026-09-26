@@ -99,10 +99,17 @@ def adapter_weights(lora_dir):
     return [k for k in keys if k not in expert_keys], expert_keys, shapes
 
 def targets(lora_dir):
-    """The module names and parameter names the adapter claims to change"""
-    if not lora_dir or not os.path.isfile(os.path.join(lora_dir, "adapter_config.json")):
-        return ["q_proj", "o_proj"], ["gate_up_proj", "down_proj"]
-    config = json.load(open(os.path.join(lora_dir, "adapter_config.json")))
+    """The module names and parameter names the adapter claims to change
+
+    Read from the adapter rather than assumed. A guessed target list makes this check answer a
+    question about a different adapter than the one that was merged, and report success for it.
+    """
+    config_path = os.path.join(lora_dir, "adapter_config.json")
+    if not os.path.isfile(config_path):
+        raise SystemExit(f"No adapter_config.json in COGMOD_LORA: {lora_dir}\n"
+                         f"  This check compares the merge against the targets the adapter declares;\n"
+                         f"  without it there is nothing to check against.")
+    config = json.load(open(config_path))
     return config.get("target_modules", []), config.get("target_parameters", [])
 
 
@@ -110,8 +117,10 @@ if __name__ == "__main__":
     samples = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     base_dir, merged_dir = os.environ.get("COGMOD_BASE_MODEL"), os.environ.get("COGMOD_MERGED_MODEL")
     lora_dir = os.environ.get("COGMOD_LORA")
-    if not base_dir or not merged_dir:
-        raise SystemExit("Set COGMOD_BASE_MODEL and COGMOD_MERGED_MODEL (env.sh does)")
+    # COGMOD_LORA is required too: it is what the merge is checked *against*, and this script
+    # used to fall back to a guessed target list and pass without ever reading the adapter.
+    if not base_dir or not merged_dir or not lora_dir:
+        raise SystemExit("Set COGMOD_BASE_MODEL, COGMOD_MERGED_MODEL and COGMOD_LORA (env.sh does)")
 
     base_map, merged_map = weight_index(base_dir), weight_index(merged_dir)
     print(f"base:   {base_dir}\nmerged: {merged_dir}")

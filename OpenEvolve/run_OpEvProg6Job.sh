@@ -1,7 +1,14 @@
 #!/bin/bash
 # Run the search: vLLM serves the generator model, OpenEvolve evolves and scores programs.
-# Paths come from env.sh; override the model, output or length with environment variables:
-#   SEARCH_MODEL=$MODELS/Qwen3-Coder-Next-Merged ITERATIONS=600 sbatch OpenEvolve/run_OpEvProg6Job.sh
+#
+# SEARCH_MODEL and SEARCH_OUTPUT are required and have no defaults, because a default for either
+# produces a complete, plausible run of a condition you did not ask for:
+#   fine-tuned: SEARCH_MODEL=$COGMOD_MERGED_MODEL SEARCH_OUTPUT=$PROJECT/Results/OpenEvolveFT_v2 \
+#                 sbatch OpenEvolve/run_OpEvProg6Job.sh
+#   base:       SEARCH_MODEL=$COGMOD_BASE_MODEL   SEARCH_OUTPUT=$PROJECT/Results/OpenEvolveBase_v2 \
+#                 sbatch OpenEvolve/run_OpEvProg6Job.sh
+# ITERATIONS is optional (config.yaml decides otherwise); the run records what it used in
+# $SEARCH_OUTPUT/run_config.txt.
 #SBATCH --job-name=OpenEvolve
 #SBATCH --account=gusr58621
 #SBATCH --partition=gpu_h100        # request H100 GPU
@@ -19,9 +26,18 @@ source env.sh || { echo "env.sh not found: submit this job from the repository r
 # mandatory fake API key
 export OPENAI_API_KEY="sk-no-key"
 
-# model to evolve with (base by default), where results go, and how many iterations
-export MODEL_DIR="${SEARCH_MODEL:-$MODELS/Qwen3-Coder-Next}"
-OUTPUT_DIR="${SEARCH_OUTPUT:-$PROJECT/Results/OpenEvolve}"
+# Which model to evolve with and where results go. Both required: see need() in env.sh.
+need SEARCH_MODEL SEARCH_OUTPUT || exit 1
+export MODEL_DIR="$SEARCH_MODEL"
+OUTPUT_DIR="$SEARCH_OUTPUT"
+[ -d "$MODEL_DIR" ] || { echo "ERROR: SEARCH_MODEL is not a directory: $MODEL_DIR"; exit 1; }
+
+# Anything that is not the base model is a fine-tuned run, and is only the *current* fine-tune if
+# the merge postdates the adapter. Checked before the 20-minute model load, not after.
+if [ "$(readlink -f "$MODEL_DIR")" != "$(readlink -f "$COGMOD_BASE_MODEL")" ]; then
+  refuse_stale_merge "$MODEL_DIR" "$COGMOD_LORA" || exit 1
+fi
+
 ITERATION_ARG=""
 [ -n "${ITERATIONS:-}" ] && ITERATION_ARG="--iterations $ITERATIONS"
 
@@ -30,6 +46,12 @@ export LOG_FILE="$PROJECT/logs/vllm_${SLURM_JOB_ID}.log"
 echo "model:   $MODEL_DIR"
 echo "output:  $OUTPUT_DIR"
 echo "vllm log: $LOG_FILE"
+
+# Record which model produced these results, so the directory name is never the only claim about it
+provenance "$OUTPUT_DIR" \
+  model="$MODEL_DIR" base="$COGMOD_BASE_MODEL" adapter="$COGMOD_LORA" \
+  data="$COGMOD_DATA_PATH" score_split="${COGMOD_SCORE_SPLIT:-Val}" \
+  iterations="${ITERATIONS:-from config.yaml}" vllm_log="$LOG_FILE"
 
 # the merged model does not necessarily ship a chat template
 CHAT_TEMPLATE_ARG=""

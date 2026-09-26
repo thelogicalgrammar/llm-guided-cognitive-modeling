@@ -262,9 +262,15 @@ EOF
 [ ] 4.2 OpenEvolve/run_OpEvProg6Job.sh needs no editing: it sources env.sh and takes the
         model, output directory and iteration count from the environment.
 
-        SEARCH_MODEL    default $MODELS/Qwen3-Coder-Next (use $COGMOD_MERGED_MODEL for the fine-tuned run)
-        SEARCH_OUTPUT   default $PROJECT/Results/OpenEvolve
-        ITERATIONS      default: max_iterations from config.yaml
+        SEARCH_MODEL    REQUIRED. $COGMOD_BASE_MODEL or $COGMOD_MERGED_MODEL.
+        SEARCH_OUTPUT   REQUIRED. Results directory, one per condition.
+        ITERATIONS      optional, default: max_iterations from config.yaml
+
+        The first two have no defaults. They used to, and on 2026-09-26 a run submitted as the
+        fine-tuned condition served the base model into Results/OpenEvolveFT_v2 for an hour,
+        because SEARCH_MODEL was written as $MERGED (not a variable) and expanded to empty.
+        Every run now writes $SEARCH_OUTPUT/run_config.txt naming the model that produced it,
+        and refuses to start if $COGMOD_MERGED_MODEL is older than $COGMOD_LORA.
 
         grep -nE "SEARCH_MODEL|SEARCH_OUTPUT|ITERATIONS|--account|--time" OpenEvolve/run_OpEvProg6Job.sh
 
@@ -310,7 +316,8 @@ print(r.metrics)"
 
 [ ] 5.1 Run a short search with the base model.
 
-        ITERATIONS=600 sbatch --time=2:30:00 OpenEvolve/run_OpEvProg6Job.sh
+        SEARCH_MODEL=$COGMOD_BASE_MODEL SEARCH_OUTPUT=$PROJECT/Results/OpenEvolveSmoke \
+            ITERATIONS=600 sbatch --time=2:30:00 OpenEvolve/run_OpEvProg6Job.sh
         squeue -u $USER
 
         600 iterations rather than 200, because every job pays ~20 minutes of startup.
@@ -323,7 +330,8 @@ print(r.metrics)"
 [ ] 5.3 After it finishes, check the log (results_OpenEvolve_<jobid>.log):
 
         L=results_OpenEvolve_<jobid>.log
-        python OpenEvolve/summariseRun.py $PROJECT/Results/OpenEvolve $L
+        python OpenEvolve/summariseRun.py $PROJECT/Results/OpenEvolveSmoke $L
+        cat $PROJECT/Results/OpenEvolveSmoke/run_config.txt   # which model actually produced this
         # a run that stores only the initial program means no LLM response ever became a
         # program: check the model name first, then the vllm log
         grep -ciE "404|not found|does not exist" $L $PROJECT/logs/vllm_*.log
@@ -340,21 +348,31 @@ print(r.metrics)"
 6. FULL RUNS
 ------------
 
+        Both arms name their model and output explicitly. Keep the pair on one line: splitting
+        them is what lets one reach the job without the other.
+
 [ ] 6.1 Base model.
 
-        sbatch OpenEvolve/run_OpEvProg6Job.sh
+        SEARCH_MODEL=$COGMOD_BASE_MODEL SEARCH_OUTPUT=$PROJECT/Results/OpenEvolveBase_v2 \
+            sbatch OpenEvolve/run_OpEvProg6Job.sh
 
 [ ] 6.2 Resume after a wall-time stop (checkpoints are written every 30 iterations).
 
-        ls $PROJECT/Results/OpenEvolve/checkpoints/
+        ls $PROJECT/Results/OpenEvolveBase_v2/checkpoints/
         # add to the openevolve-run line in the job script:
-        #   --checkpoint $PROJECT/Results/OpenEvolve/checkpoints/checkpoint_<N>
-        sbatch OpenEvolve/run_OpEvProg6Job.sh
-
-[ ] 6.3 Fine-tuned model: same script, different model and output directory.
-
-        SEARCH_MODEL=$COGMOD_MERGED_MODEL SEARCH_OUTPUT=$PROJECT/Results/OpenEvolveMerged \
+        #   --checkpoint $PROJECT/Results/OpenEvolveBase_v2/checkpoints/checkpoint_<N>
+        SEARCH_MODEL=$COGMOD_BASE_MODEL SEARCH_OUTPUT=$PROJECT/Results/OpenEvolveBase_v2 \
             sbatch OpenEvolve/run_OpEvProg6Job.sh
+
+[ ] 6.3 Fine-tuned model: same script, different model and output directory. Requires a merge
+        newer than $COGMOD_LORA; the job checks and refuses otherwise.
+
+        SEARCH_MODEL=$COGMOD_MERGED_MODEL SEARCH_OUTPUT=$PROJECT/Results/OpenEvolveFT_v2 \
+            sbatch OpenEvolve/run_OpEvProg6Job.sh
+
+[ ] 6.3a Confirm each finished run is the condition its directory name claims:
+
+        for d in $PROJECT/Results/OpenEvolve*/; do echo "== $d"; grep -E "^(model|adapter):" $d/run_config.txt 2>/dev/null || echo "   no run_config.txt (predates provenance stamping)"; done
 
 [ ] 6.4 Back up the results after each run: project space is not deleted automatically,
         but it is not backed up either.

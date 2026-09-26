@@ -23,7 +23,6 @@ experiments = [
 ] # different names are used here to ensure the LLM cannot get the names of the experiments
 
 data_path = os.environ.get("COGMOD_DATA_PATH", "Path/to/your/data/")  # Update this path (or set COGMOD_DATA_PATH) to your actual data directory
-prog_path = os.environ.get("COGMOD_PROG_PATH", "Path/to/your/programs/")  # Update this path (or set COGMOD_PROG_PATH) to your actual programs directory
 
 TRAIN_BLOCKS = [load_blocks(np.load(os.path.join(data_path, exp['name'], f"struc_Train_{exp['experiment']}.npy"))) for exp in experiments]
 
@@ -430,4 +429,8 @@ def evaluate_stage2(program_path):
     return evaluate(program_path, FIT_MAXFEV, 2, FIT_STARTS, FIT_METHOD)
 
 if __name__ == "__main__":
-    print(evaluate_stage2(f"{prog_path}initial_program.py")) # just for testing, the other print statements are also purely for testing purposes
+    # initial_program.py sits next to this file, so locate it relative to __file__ rather than
+    # through an environment variable: COGMOD_PROG_PATH existed only for this line, and being one
+    # character from COGMOD_PROGRAMS_PATH (a different variable, in EvolvedModelInference) made
+    # setting the wrong one impossible to notice.
+    print(evaluate_stage2(os.path.join(os.path.dirname(os.path.abspath(__file__)), "initial_program.py")))

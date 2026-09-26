@@ -18,10 +18,27 @@ torch.set_num_threads(optimized_threads)
 torch.set_num_interop_threads(2)
 
 # ---------- PATHS ----------
-# edit these, or set the environment variables (env.sh sets $MODELS and $PROJECT)
-base_model_path = os.environ.get("COGMOD_BASE_MODEL", "/path/to/your/Models/Qwen3-Coder-Next")
-lora_adapter_path = os.environ.get("COGMOD_LORA", "/path/to/your/Data/FineTune/checkpoint-40/")
-merged_output_path = os.environ.get("COGMOD_MERGED_MODEL", "/path/to/your/Models/Qwen3-Coder-Next-Merged")
+def required(name, what):
+    """The value of an environment variable, or an explanation of why there is no default
+
+    These used to fall back to hard-coded paths. On this system those paths exist: the LoRA
+    default was checkpoint-40, the published adapter with untrained experts, so an unset or
+    misspelled COGMOD_LORA merged the wrong adapter into a 150 GB directory and said nothing.
+    """
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise SystemExit(
+            f"{name} is not set, so there is no {what} to merge.\n"
+            f"  There is deliberately no default: on this machine a default path exists and would\n"
+            f"  produce a complete, wrong merge rather than an error.\n"
+            f"  Run `source env.sh` (it sets all three) or set {name} explicitly."
+        )
+    return value
+
+
+base_model_path = required("COGMOD_BASE_MODEL", "base model")
+lora_adapter_path = required("COGMOD_LORA", "LoRA adapter")
+merged_output_path = required("COGMOD_MERGED_MODEL", "output directory")
 
 # ---------- CHECK THE INPUTS FIRST ----------
 # loading the base model takes ~40 minutes, so fail immediately on a wrong path

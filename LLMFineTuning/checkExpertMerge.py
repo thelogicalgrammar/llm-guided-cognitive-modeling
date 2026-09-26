@@ -47,8 +47,13 @@ def main():
     samples = int(sys.argv[1]) if len(sys.argv) > 1 else 6
     base_dir = os.environ.get("COGMOD_BASE_MODEL")
     merged_dir = os.environ.get("COGMOD_MERGED_MODEL")
-    if not base_dir or not merged_dir:
-        raise SystemExit("set COGMOD_BASE_MODEL and COGMOD_MERGED_MODEL (env.sh does)")
+    adapter_dir = os.environ.get("COGMOD_LORA")
+    if not base_dir or not merged_dir or not adapter_dir:
+        raise SystemExit("set COGMOD_BASE_MODEL, COGMOD_MERGED_MODEL and COGMOD_LORA (env.sh does)")
+    # Without the adapter this script still prints a report, but one that cannot distinguish an
+    # expert left unchanged because it was never routed from one the merge failed to apply.
+    if not os.path.isfile(os.path.join(adapter_dir, "adapter_model.safetensors")):
+        raise SystemExit(f"No adapter_model.safetensors in COGMOD_LORA: {adapter_dir}")
 
     base_weights, merged_weights = weight_map(base_dir), weight_map(merged_dir)
     base_expert = {n for n in base_weights if EXPERTISH.search(n)}
@@ -64,20 +69,16 @@ def main():
     # handle them as fused parameters instead, which is what happened here: the shared-expert MLP was
     # never adapted, so its weights are identical to the base by design, not by a failed merge.
     adapted_prefixes = set()
-    adapter_dir = os.environ.get("COGMOD_LORA")
-    if adapter_dir and os.path.isfile(os.path.join(adapter_dir, "adapter_model.safetensors")):
-        with safe_open(os.path.join(adapter_dir, "adapter_model.safetensors"), framework="pt") as f:
-            for key in f.keys():
-                path = re.sub(r"^base_model\.model\.", "", key)
-                path = re.split(r"\.(?:base_layer\.)?lora_[AB]\b", path)[0]
-                adapted_prefixes.add(path)
-        print(f"\nthe adapter covers {len(adapted_prefixes)} module paths, e.g. "
-              f"{sorted(adapted_prefixes)[:2]}")
-    else:
-        print("\nCOGMOD_LORA not readable: reporting every expert tensor, targeted or not")
+    with safe_open(os.path.join(adapter_dir, "adapter_model.safetensors"), framework="pt") as f:
+        for key in f.keys():
+            path = re.sub(r"^base_model\.model\.", "", key)
+            path = re.split(r"\.(?:base_layer\.)?lora_[AB]\b", path)[0]
+            adapted_prefixes.add(path)
+    print(f"\nthe adapter covers {len(adapted_prefixes)} module paths, e.g. "
+          f"{sorted(adapted_prefixes)[:2]}")
 
     def is_adapted(name):
-        return not adapted_prefixes or any(name.startswith(p + ".") for p in adapted_prefixes)
+        return any(name.startswith(p + ".") for p in adapted_prefixes)
 
     shared = sorted(base_expert & merged_expert)
     if not shared:
