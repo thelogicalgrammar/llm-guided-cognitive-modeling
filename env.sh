@@ -36,5 +36,12 @@ export MYQUOTA_PROJECTSPACES=$PROJECT          # so `myquota` reports the projec
 # one thread per process: OpenEvolve runs many evaluations in parallel
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
+# Print what the paths actually resolved to. Because every value above is a default, a variable
+# exported earlier in the shell wins, which is what makes overrides work for jobs but also means a
+# stale value from a previous session is used silently. Seeing them is the cheap way to notice.
+echo "cogmod: LORA=$COGMOD_LORA"
+echo "        MERGED=$COGMOD_MERGED_MODEL"
+echo "        FINETUNE_OUT=$COGMOD_FINETUNE_OUT   DATA=$COGMOD_DATA_PATH"
+
 module load 2025 Python/3.13.1-GCCcore-14.2.0 NVHPC/25.3-CUDA-12.8.0
 source $REPO/FT/bin/activate
