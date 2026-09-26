@@ -101,11 +101,19 @@ if __name__ == "__main__":
     # a run writes its output where COGMOD_FINETUNE_OUT pointed at the time, which is easy to lose
     # track of between a smoke run and a full one
     project = os.environ.get("PROJECT")
+    others = []
     if project:
-        siblings = [p for p in Path(project).glob("FineTune*") if p.is_dir() and p != run_dir]
-        if siblings:
-            print(f"  other fine-tuning directories: "
-                  f"{', '.join(f'{p.name} ({len(list(p.iterdir()))} entries)' for p in siblings)}")
+        others += [p for p in Path(project).glob("FineTune*") if p.is_dir()]
+    data = os.environ.get("COGMOD_DATA_PATH")
+    if data:
+        # where an earlier version of FineTuneQ3LoRA.py defaulted to, so a run's output can be here
+        others += [p for p in Path(data).glob("FineTune*") if p.is_dir()]
+    others = [p for p in others if p.resolve() != run_dir.resolve()]
+    if others:
+        print("  other fine-tuning directories:")
+        for other in others:
+            entries = sorted(p.name for p in other.iterdir())
+            print(f"    {other}: {', '.join(entries) if entries else '(empty)'}")
 
     loss_report(run_dir)
 

@@ -109,7 +109,11 @@ def get_dataset(df):
 # ---------- DEFINE CONFIGURATIONS ----------
 model_path = os.environ.get("COGMOD_BASE_MODEL", "/path/to/your/Models/Qwen3-Coder-Next")
 data_path = os.environ.get("COGMOD_DATA_PATH", "/path/to/your/Data/").rstrip("/") + "/"
-output_dir = os.environ.get("COGMOD_FINETUNE_OUT", f"{data_path}FineTune/").rstrip("/") + "/"
+# the same default as run_FineTuneQ3LoRAjob.sh, which used to differ: the job created
+# $PROJECT/FineTuneNew while this wrote into the data directory, so the results of a run were not
+# where anything looked for them
+output_dir = (os.environ.get("COGMOD_FINETUNE_OUT")
+              or f"{os.environ.get('PROJECT', data_path.rstrip('/'))}/FineTuneNew").rstrip("/") + "/"
 max_seq_length = 17555 # Adjust based on your needs
 seed=3407
 
