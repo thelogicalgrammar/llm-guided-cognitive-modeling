@@ -60,6 +60,25 @@ def main():
         example = sorted(names)[:2]
         print(f"  {label} examples: {example}")
 
+    # Which module paths the adapter actually covers. peft may drop entries from target_modules and
+    # handle them as fused parameters instead, which is what happened here: the shared-expert MLP was
+    # never adapted, so its weights are identical to the base by design, not by a failed merge.
+    adapted_prefixes = set()
+    adapter_dir = os.environ.get("COGMOD_LORA")
+    if adapter_dir and os.path.isfile(os.path.join(adapter_dir, "adapter_model.safetensors")):
+        with safe_open(os.path.join(adapter_dir, "adapter_model.safetensors"), framework="pt") as f:
+            for key in f.keys():
+                path = re.sub(r"^base_model\.model\.", "", key)
+                path = re.split(r"\.(?:base_layer\.)?lora_[AB]\b", path)[0]
+                adapted_prefixes.add(path)
+        print(f"\nthe adapter covers {len(adapted_prefixes)} module paths, e.g. "
+              f"{sorted(adapted_prefixes)[:2]}")
+    else:
+        print("\nCOGMOD_LORA not readable: reporting every expert tensor, targeted or not")
+
+    def is_adapted(name):
+        return not adapted_prefixes or any(name.startswith(p + ".") for p in adapted_prefixes)
+
     shared = sorted(base_expert & merged_expert)
     if not shared:
         raise SystemExit(
@@ -76,9 +95,12 @@ def main():
 
     failures = []
     for pattern, names in sorted(groups.items()):
+        targeted = is_adapted(names[0])
         changed = identical = 0
         worst = 0.0
-        for name in names[:: max(1, len(names) // 3)][:3]:          # a few layers per parameter
+        # spread the samples over the group, since a per-expert layout puts each expert in its own
+        # tensor and most experts of a 512-expert layer are never routed in a short run
+        for name in names[:: max(1, len(names) // (samples * 2))][:samples * 2]:
             for expert in range(samples):
                 left = slice_of(base_dir, base_weights, name, expert)
                 if left is None:
@@ -90,21 +112,26 @@ def main():
                     changed += 1
                     denominator = left.norm().item() or 1.0
                     worst = max(worst, (right - left).norm().item() / denominator)
-        verdict = "OK" if changed else "UNCHANGED"
-        print(f"  {verdict:9s} {changed:3d} changed, {identical:3d} identical, "
-              f"largest |delta|/|W| {worst:.4f}   {pattern}")
-        if not changed:
+        if changed:
+            verdict = "CHANGED"
+        elif targeted:
+            verdict = "FAILED"
             failures.append(pattern)
+        else:
+            verdict = "not targeted"
+        print(f"  {verdict:12s} {changed:3d} changed, {identical:3d} identical, "
+              f"largest |delta|/|W| {worst:.4f}   {pattern}")
 
     if failures:
-        print("\nthese expert parameters are identical to the base model everywhere sampled:")
+        print("\nthese parameters are covered by the adapter but identical to the base everywhere\n"
+              "sampled, so the merge did not apply them:")
         for pattern in failures:
             print(f"  {pattern}")
-        print("The merge did not apply them. Serving this model would run the base condition.")
         raise SystemExit(1)
 
-    print("\nEvery shared expert parameter changed somewhere: the merge applied the expert deltas.")
-    print("Experts that did not change were most likely never routed during 63 training steps.")
+    print("\nEvery parameter the adapter covers changed somewhere: the merge applied the deltas.")
+    print("Individual experts that did not change were never routed during training, and parameters")
+    print("marked 'not targeted' have no adapter weights, so matching the base is correct for them.")
 
 
 if __name__ == "__main__":
