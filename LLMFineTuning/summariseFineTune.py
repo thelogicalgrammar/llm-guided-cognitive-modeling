@@ -95,6 +95,18 @@ if __name__ == "__main__":
         raise SystemExit(f"not a directory: {run_dir!s} (pass it, or set COGMOD_FINETUNE_OUT)")
 
     print(f"run: {run_dir}")
+    contents = sorted(p.name + ("/" if p.is_dir() else "") for p in run_dir.iterdir())
+    print(f"  contains: {', '.join(contents) if contents else '(nothing)'}")
+
+    # a run writes its output where COGMOD_FINETUNE_OUT pointed at the time, which is easy to lose
+    # track of between a smoke run and a full one
+    project = os.environ.get("PROJECT")
+    if project:
+        siblings = [p for p in Path(project).glob("FineTune*") if p.is_dir() and p != run_dir]
+        if siblings:
+            print(f"  other fine-tuning directories: "
+                  f"{', '.join(f'{p.name} ({len(list(p.iterdir()))} entries)' for p in siblings)}")
+
     loss_report(run_dir)
 
     for name in ("Final_LoRA", "Smoke_LoRA"):
