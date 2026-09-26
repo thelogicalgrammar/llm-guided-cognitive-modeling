@@ -77,22 +77,24 @@ experiment index, under an identical budget (Powell, `maxfev=300`). Test NLL:
 | HorizonSade *(held out)* | 0.6175 | 0.6179 | 0.6046 | 0.6024 |
 | HorizonFeng *(held out)* | 0.3622 | 0.3610 | 0.3629 | 0.3611 |
 | ChangingBandit *(held out)* | 0.4443 | 0.4438 | 0.3879 | 0.3872 |
-| Maggie's Farm *(held out)* | 0.6603 | 0.6592 | *pending* | *pending* |
-| **mean over the first 8** | **0.4914** | **0.4914** | **0.4702** | **0.4886** |
+| Maggie's Farm *(held out)* | 0.6603 | 0.6592 | 0.6624 | 0.6622 |
+| **mean over all 9** | **0.5102** | **0.5100** | **0.4916** | **0.5079** |
 
-**Effect, base program:** none. Mean change −0.0001, nothing above 0.006. The bug is real in the
+**Effect, base program:** none. Mean change −0.0002, nothing above 0.006. The bug is real in the
 code and inert in the results.
 
 **Effect, fine-tuned program:** correcting the bug *costs* 0.077 on HorizonSomer and HorizonWaltz and
-does nothing on the held-out horizon tasks. Under the intended reading, the horizon-specific branch
-fires on every game of those two tasks; under the bug it fires only on games 4–5, which mostly
-switches that machinery off. So the LLM's horizon-specific logic is actively harmful, and the bug
-accidentally suppressed it. The published program is better than the program it was trying to write.
+does nothing anywhere else, including on the held-out horizon tasks. Under the intended reading, the
+horizon-specific branch fires on every game of those two tasks; under the bug it fires only on games
+4–5, which mostly switches that machinery off. So the LLM's horizon-specific logic is actively
+harmful, and the bug accidentally suppressed it. The published program is better than the program it
+was trying to write.
 
-**Consequence for the headline comparison.** The fine-tuned program beats the base program by 0.021
-as published (0.4702 vs 0.4914). Corrected, they are level (0.4886 vs 0.4914). **Most of the
-apparent fine-tuning advantage is an artefact of this bug**, not evidence that fine-tuning found a
-better cognitive model.
+**Consequence for the headline comparison.** The fine-tuned program beats the base program by
+**0.0186** as published (0.4916 vs 0.5102). Corrected, the gap is **0.0021** (0.5079 vs 0.5100) —
+about a ninth of it. **Nearly all of the apparent fine-tuning advantage is an artefact of this bug**,
+not evidence that fine-tuning found a better cognitive model. Since the two conditions also differed
+far less than intended (issue 4), there is little reason to expect a real difference between them.
 
 *Caveat: this table uses a lightweight Powell harness at `maxfev=300`, not the full JAX pipeline, so
 treat absolute values as approximate. The differences are the meaningful part, since both columns
