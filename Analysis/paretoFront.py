@@ -7,6 +7,13 @@ Pareto fronts of complexity against accuracy, for one or more OpenEvolve runs.
 Reads <run_dir>/checkpoints/checkpoint_<N>/programs/*.json, the same files
 OpenEvolve/summariseRun.py reads, so it works on a run that is still going.
 
+It pools every checkpoint up to the one chosen, deduplicating by program id. config.yaml
+sets population_size 800 against max_iterations 10000, so any one checkpoint holds only
+the programs alive at that moment, and eviction goes by fitness: a snapshot thins out the
+cheap, inaccurate programs that anchor the low-complexity end of a front, and would make
+both arms look better and more similar than they were. --snapshot gives the single-
+checkpoint view. Neither recovers programs that lived and died between two checkpoints.
+
 Unlike the Pareto plot in Analysis/OpenEvolveAnalysis.ipynb, which reads the published
 CSVs and plots the AST-based model_complexity against combined_score, this defaults to
 effective_parameters against nll: effective_parameters is what a BIC penalty would
@@ -43,21 +50,30 @@ def checkpoints_of(run_dir):
     return found
 
 
-def load_points(checkpoint, x_key):
-    """(x, nll, program_id) for every program in a checkpoint that ran and has both metrics"""
-    points = []
-    for path in (checkpoint / "programs").glob("*.json"):
-        try:
-            program = json.load(open(path))
-        except (json.JSONDecodeError, OSError):
-            continue  # a checkpoint being written while a run is live can hold a partial file
-        metrics = program.get("metrics", {})
-        if metrics.get("runs_successfully", 0) != 1:
-            continue
-        if x_key not in metrics or "nll" not in metrics:
-            continue
-        points.append((float(metrics[x_key]), float(metrics["nll"]), program.get("id", "?")))
-    return points
+def load_points(checkpoints, x_key):
+    """(x, nll, program_id) for every distinct program across the given checkpoints
+
+    Pooling matters: config.yaml sets population_size 800 against max_iterations 10000, so a
+    single checkpoint holds only the programs alive at that moment. Eviction is by fitness, so
+    a snapshot is a *selected* sample - it thins out exactly the cheap, inaccurate programs
+    that anchor the low-complexity end of the front. Programs carry stable ids, so the union
+    over checkpoints recovers everything that survived to any checkpoint boundary.
+    """
+    by_id = {}
+    for checkpoint in checkpoints:
+        for path in (checkpoint / "programs").glob("*.json"):
+            try:
+                program = json.load(open(path))
+            except (json.JSONDecodeError, OSError):
+                continue  # a checkpoint being written while a run is live can hold a partial file
+            metrics = program.get("metrics", {})
+            if metrics.get("runs_successfully", 0) != 1:
+                continue
+            if x_key not in metrics or "nll" not in metrics:
+                continue
+            program_id = program.get("id", str(path))
+            by_id[program_id] = (float(metrics[x_key]), float(metrics["nll"]), program_id)
+    return list(by_id.values())
 
 
 def pareto_front(points):
@@ -82,6 +98,9 @@ def main():
                         help="iteration to read (default: the highest all runs share)")
     parser.add_argument("--x", default="effective_parameters", choices=X_CHOICES)
     parser.add_argument("--out", default=None, help="PNG to write (default: no plot, text only)")
+    parser.add_argument("--snapshot", action="store_true",
+                        help="read only the chosen checkpoint instead of pooling every checkpoint "
+                             "up to it: what the search was holding, not what it found")
     args = parser.parse_args()
 
     available = {run: checkpoints_of(run) for run in args.runs}
@@ -100,11 +119,14 @@ def main():
                 print(f"note: {Path(run).name} reaches checkpoint_{max(found)}, but comparing at "
                       f"checkpoint_{iteration}, the highest shared with the other run(s)")
 
-    print(f"\ncheckpoint_{iteration}, x = {args.x}, y = nll (both minimised)")
+    scope = f"checkpoint_{iteration} only" if args.snapshot else f"checkpoints up to {iteration}"
+    print(f"\n{scope}, x = {args.x}, y = nll (both minimised)")
     series = []
     for run in args.runs:
         label = Path(run).name
-        points = load_points(available[run][iteration], args.x)
+        chosen = ([available[run][iteration]] if args.snapshot
+                  else [path for step, path in sorted(available[run].items()) if step <= iteration])
+        points = load_points(chosen, args.x)
         if not points:
             print(f"\n{label}: no programs with both {args.x} and nll")
             continue
@@ -112,7 +134,9 @@ def main():
         series.append((label, points, front))
 
         best = min(points, key=lambda p: p[1])
-        print(f"\n{label}: {len(points)} programs that ran, {len(front)} on the front")
+        print(f"\n{label}: {len(points)} distinct programs that ran"
+              f"{'' if args.snapshot else f' over {len(chosen)} checkpoints'}, "
+              f"{len(front)} on the front")
         print(f"  best nll {best[1]:.4f} at {args.x} {best[0]:g}")
         print(f"  {'front: ' + args.x:>28} | nll")
         for x, nll, _ in front:
