@@ -120,8 +120,14 @@ provenance() {
         printf '%-13s %s\n' "repo_commit:" "$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout')"
         printf '%-13s %s\n' "repo_dirty:" "$(git -C "$repo" status --porcelain 2>/dev/null | wc -l) uncommitted files"
         printf '%-13s %s\n' "python:" "$(command -v python 2>/dev/null)"
-        python -c 'import peft, transformers; print(f"libraries:    peft {peft.__version__} | transformers {transformers.__version__}")' 2>/dev/null \
-            || printf '%-13s %s\n' "libraries:" "peft/transformers not importable in this environment"
+        # The environment that WROTE THE STAMP. Inside a job that is the job's environment, which
+        # is what you want. Stamping something after the fact from a login shell records that
+        # shell instead: a retroactive stamp on the merged model reported peft 0.18.1 (the FT
+        # venv) although the merge itself ran in venvs/finetune with peft 0.21 - and 0.18.1 is
+        # exactly the version documented as unable to merge this adapter. Named so it cannot be
+        # read as a property of the artifact; pass artifact facts explicitly as label=value.
+        python -c 'import peft, transformers; print(f"stamped_in:   peft {peft.__version__} | transformers {transformers.__version__}")' 2>/dev/null \
+            || printf '%-13s %s\n' "stamped_in:" "peft/transformers not importable where the stamp was written"
         for pair in "$@"; do
             label="${pair%%=*}"; value="${pair#*=}"
             if [ -e "$value" ]; then

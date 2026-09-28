@@ -1,2 +1,14 @@
 *.pyc
 __pycache__/
+
+# SLURM output. The job scripts write results_%x_%j.log / errors_%x_%j.txt into the submit
+# directory, and run_MergeLoRAjob.sh writes result/ and error/.
+results_*.log
+errors_*.txt
+result/
+error/
+results/
+
+# Data lives in $COGMOD_DATA_PATH on the cluster ($PROJECT/Data); the repo-local Data/ is a
+# working copy produced by loadAndSplitData.py, not something to version.
+Data/
